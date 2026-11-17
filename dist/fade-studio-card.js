@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.2.0';
+const FS_VERSION = '0.3.0';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
@@ -132,9 +132,30 @@ function lightInfo(hass, eid) {
     color: modes.some((m) => ['hs', 'xy', 'rgb', 'rgbw', 'rgbww'].includes(m)),
     minK: a.min_color_temp_kelvin || 2000,
     maxK: a.max_color_temp_kelvin || 6500,
-    ikea: /ikea/i.test(dev?.manufacturer || ''),
+    ikea: /ikea/i.test(dev?.manufacturer || '') || /tradfri|kajplats|ikea/i.test(dev?.model || ''),
     available: !!st && st.state !== 'unavailable',
   };
+}
+
+/**
+ * Standard für neue Spuren. IKEA-Lampen werden laut Karten-Einstellung `ikea_mode` behandelt:
+ *  split      – erst Ton, dann Helligkeit (Standard)
+ *  together   – gleichzeitig wie alle anderen Lampen
+ *  brightness – nur Helligkeit, der Ton der Lampe bleibt unverändert
+ */
+const IKEA_MODES = {
+  split: 'Erst Ton, dann Helligkeit (empfohlen)',
+  together: 'Gleichzeitig wie andere Lampen',
+  brightness: 'Nur Helligkeit, Ton bleibt',
+};
+function trackDefaults(info, preferred, ikeaMode = 'split') {
+  let mode = modeFor(info, preferred);
+  let split = false;
+  if (info.ikea && mode !== 'bri') {
+    if (ikeaMode === 'brightness') mode = 'bri';
+    else split = ikeaMode !== 'together';
+  }
+  return { mode, split };
 }
 
 function modeFor(info, preferred) {
@@ -367,12 +388,12 @@ function buildScript(show) {
 /* ------------------------------------------------------------------ */
 const TINTS = ['#ffd2a8', '#ffc4b8', '#ffe2b0', '#f6d0e0', '#ffcf9e'];
 
-function genDrift(hass, eids, p) {
+function genDrift(hass, eids, p, ikeaMode) {
   const L = p.cycle;
   const n = Math.max(2, Math.round(p.steps));
   return eids.map((eid, i) => {
     const info = lightInfo(hass, eid);
-    const mode = modeFor(info, p.tint ? 'color' : 'ct');
+    const { mode, split } = trackDefaults(info, p.tint ? 'color' : 'ct', ikeaMode);
     const offset = ((i / Math.max(1, eids.length)) * L) / n;
     const kMin = clamp(p.kMin, info.minK, info.maxK);
     const kMax = clamp(p.kMax, info.minK, info.maxK);
@@ -386,7 +407,7 @@ function genDrift(hass, eids, p) {
       const c = rgbToHex(p.tint ? mixRgb(base, hexToRgb(TINTS[(i + j) % TINTS.length]), 0.45) : base);
       kfs.push({ t, b, k, c });
     }
-    return { entity: eid, mode, split: info.ikea && mode !== 'bri', kfs: kfs.sort((a, b) => a.t - b.t) };
+    return { entity: eid, mode, split, kfs: kfs.sort((a, b) => a.t - b.t) };
   });
 }
 
@@ -412,20 +433,36 @@ function genBreathe(hass, eids, p) {
 /* ------------------------------------------------------------------ */
 const LANE_H = 64;
 
+/*
+ * Bearbeitungsstand außerhalb des Elements: Home Assistant baut Karten gelegentlich
+ * neu auf (z. B. kurz nach dem Laden). Ungespeicherte Änderungen bleiben so erhalten.
+ */
+const SESSION = { show: null, sel: null, dirty: false, msg: '', gen: null };
+
 class FadeStudioCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this._show = null;
-    this._sel = null; // {ti, ki}
-    this._dirty = false;
-    this._msg = '';
-    this._gen = null;
-    this._rendered = false;
   }
+  get _show() { return SESSION.show; }
+  set _show(v) { SESSION.show = v; }
+  get _sel() { return SESSION.sel; } // {ti, ki}
+  set _sel(v) { SESSION.sel = v; }
+  get _dirty() { return SESSION.dirty; }
+  set _dirty(v) { SESSION.dirty = v; }
+  get _msg() { return SESSION.msg; }
+  set _msg(v) { SESSION.msg = v; }
+  get _gen() { return SESSION.gen; }
+  set _gen(v) { SESSION.gen = v; }
 
   setConfig(config) {
     this._config = config || {};
+  }
+  _ikeaMode() {
+    return IKEA_MODES[this._config?.ikea_mode] ? this._config.ikea_mode : 'split';
+  }
+  static getConfigElement() {
+    return document.createElement('fade-studio-card-editor');
   }
   getCardSize() {
     return 10;
@@ -438,10 +475,10 @@ class FadeStudioCard extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     if (first) {
-      this._newShow();
+      if (!this._show) this._newShow();
       this._render();
       this._ro = new ResizeObserver(() => this._renderLanes());
-      this._timer = setInterval(() => this._tick(), 250);
+      this._timer = setInterval(() => this._tick(), 100);
     } else {
       this._updateStatus();
     }
@@ -454,7 +491,8 @@ class FadeStudioCard extends HTMLElement {
   }
   connectedCallback() {
     if (this._hass && !this._timer) {
-      this._timer = setInterval(() => this._tick(), 250);
+      this._render();
+      this._timer = setInterval(() => this._tick(), 100);
       const tl = this.shadowRoot.querySelector('.timeline');
       if (tl) this._ro?.observe(tl);
     }
@@ -683,25 +721,36 @@ class FadeStudioCard extends HTMLElement {
     if (dim && d && root.activeElement !== dim) dim.value = d.state;
   }
 
+  /** Aktuelle Position im laufenden Ablauf (Sekunden) oder null. Während des Einblendens: 0. */
+  _playTime() {
+    if (!this._running()) return null;
+    const lt = this._hass.states[this._scriptEid()]?.attributes?.last_triggered;
+    if (!lt) return null;
+    const s = this._show;
+    const t = (Date.now() - new Date(lt).getTime()) / 1000 - (s.fadeIn || 0);
+    if (t < 0) return 0;
+    return s.loop ? t % s.length : Math.min(t, s.length);
+  }
+
   _tick() {
-    const ph = this.shadowRoot.querySelectorAll('.playhead');
-    if (!ph.length) return;
-    let x = -10;
-    if (this._running()) {
-      const lt = this._hass.states[this._scriptEid()]?.attributes?.last_triggered;
-      if (lt) {
-        const s = this._show;
-        let t = (Date.now() - new Date(lt).getTime()) / 1000 - (s.fadeIn || 0);
-        if (t >= 0) {
-          t = s.loop ? t % s.length : Math.min(t, s.length);
-          x = (t / s.length) * this._laneW();
-        }
-      }
+    const r = this.shadowRoot;
+    const ph = r.querySelector('#ph');
+    if (!ph) return;
+    const t = this._playTime();
+    const ruler = r.querySelector('.rulerlane');
+    if (t === null || !ruler) {
+      ph.style.display = 'none';
+      return;
     }
-    ph.forEach((p) => {
-      p.style.left = `${x}px`;
-      p.style.display = x < 0 ? 'none' : 'block';
-    });
+    const tl = r.querySelector('.timeline').getBoundingClientRect();
+    const rr = ruler.getBoundingClientRect();
+    const lanes = r.querySelectorAll('.lane[data-lane]');
+    const bottom = lanes.length ? lanes[lanes.length - 1].getBoundingClientRect().bottom : rr.bottom;
+    ph.style.display = 'block';
+    ph.style.left = `${rr.left - tl.left + (t / this._show.length) * rr.width}px`;
+    ph.style.top = `${rr.top - tl.top}px`;
+    ph.style.height = `${bottom - rr.top}px`;
+    r.querySelector('#phT').textContent = fmtTime(t);
   }
 
   _laneW() {
@@ -779,6 +828,7 @@ class FadeStudioCard extends HTMLElement {
         </div>
 
         <div class="timeline">
+          <div id="ph" class="phline"><span id="phT" class="phtime"></span></div>
           <div class="row ruler"><div class="lab"></div><div class="lane rulerlane">${this._rulerHtml()}</div></div>
           ${s.tracks
             .map((tr, ti) => {
@@ -790,10 +840,10 @@ class FadeStudioCard extends HTMLElement {
               ].filter(Boolean);
               return `<div class="row" data-ti="${ti}">
                 <div class="lab">
-                  <div class="lname" title="${esc(tr.entity)}">${info.available ? '' : '⚠ '}${esc(info.name)}</div>
+                  <div class="lname" title="${esc(tr.entity)}">${info.available ? '' : '⚠ '}${esc(info.name)}${info.ikea ? ' <span class="badge" title="Als IKEA-Lampe erkannt">IKEA</span>' : ''}</div>
                   <div class="lctl">
                     <select data-mode="${ti}">${modes.map(([v, t]) => `<option value="${v}" ${tr.mode === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
-                    ${tr.mode !== 'bri' ? `<label class="chk small" title="IKEA-Lampen können Farbe und Helligkeit oft nicht gleichzeitig überblenden. Dann wird pro Abschnitt erst die Farbe, dann die Helligkeit geändert."><input type="checkbox" data-split="${ti}" ${tr.split ? 'checked' : ''}>IKEA</label>` : ''}
+                    ${tr.mode !== 'bri' ? `<label class="chk small" title="Pro Abschnitt erst den Ton, dann die Helligkeit überblenden. Hilft bei Lampen (oft IKEA), die beides nicht gleichzeitig können."><input type="checkbox" data-split="${ti}" ${tr.split ? 'checked' : ''}>nacheinander</label>` : ''}
                     <button class="icon" data-deltrack="${ti}" title="Spur entfernen">✕</button>
                   </div>
                 </div>
@@ -836,7 +886,7 @@ class FadeStudioCard extends HTMLElement {
     let out = '';
     for (let t = 0; t <= L + 0.001; t += step)
       out += `<span class="tick" style="left:${(t / L) * 100}%">${fmtTime(t)}</span>`;
-    return out + '<div class="playhead"></div>';
+    return out;
   }
 
   _kfEditorHtml({ ti, ki }) {
@@ -940,7 +990,7 @@ class FadeStudioCard extends HTMLElement {
         <polyline points="${poly}" fill="none" stroke="rgba(0,0,0,.35)" stroke-width="3.5"/>
         <polyline points="${poly}" fill="none" stroke="#fff" stroke-width="1.5"/>
         ${circles}
-      </svg><div class="playhead"></div>`;
+      </svg>`;
       const svg = lane.querySelector('svg');
       svg.addEventListener('pointerdown', (ev) => this._onLanePointer(ev, ti, lane, H));
     });
@@ -1041,12 +1091,12 @@ class FadeStudioCard extends HTMLElement {
       const eid = r.querySelector('#addSel').value;
       if (!eid) return;
       const info = lightInfo(this._hass, eid);
-      const mode = modeFor(info, 'ct');
+      const { mode, split } = trackDefaults(info, 'ct', this._ikeaMode());
       const k = clamp(2700, info.minK, info.maxK);
       s.tracks.push({
         entity: eid,
         mode,
-        split: info.ikea && mode !== 'bri',
+        split,
         kfs: [
           { t: 0, b: 40, k, c: rgbToHex(kelvinToRgb(k)) },
           { t: r1(s.length / 2), b: 70, k, c: rgbToHex(kelvinToRgb(k)) },
@@ -1160,7 +1210,7 @@ class FadeStudioCard extends HTMLElement {
           if (g.p.kMin > g.p.kMax) [g.p.kMin, g.p.kMax] = [g.p.kMax, g.p.kMin];
           if (g.p.bMin > g.p.bMax) [g.p.bMin, g.p.bMax] = [g.p.bMax, g.p.bMin];
           s.length = g.p.cycle;
-          s.tracks = genDrift(this._hass, g.lights, g.p);
+          s.tracks = genDrift(this._hass, g.lights, g.p, this._ikeaMode());
           if (s.name === 'Neuer Ablauf') s.name = 'Ambient Drift';
         } else {
           s.length = g.p.period;
@@ -1220,8 +1270,13 @@ const STYLE = `
   .rulerlane { height: 18px; }
   .tick { position: absolute; top: 0; font-size: .75em; color: var(--secondary-text-color); transform: translateX(-50%); }
   .tick:first-child { transform: none; }
-  .playhead { position: absolute; top: 0; bottom: 0; left: -10px; width: 2px; background: var(--primary-color, #03a9f4);
-    pointer-events: none; box-shadow: 0 0 4px var(--primary-color, #03a9f4); }
+  .timeline { position: relative; }
+  .phline { display: none; position: absolute; width: 2px; margin-left: -1px; z-index: 2; pointer-events: none;
+    background: var(--primary-color, #03a9f4); box-shadow: 0 0 6px var(--primary-color, #03a9f4); }
+  .phtime { position: absolute; top: -2px; left: 5px; font-size: .72em; font-weight: 600; padding: 0 4px; border-radius: 4px;
+    background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); white-space: nowrap; }
+  .badge { font-size: .68em; font-weight: 600; padding: 1px 5px; border-radius: 4px; vertical-align: middle;
+    background: var(--secondary-background-color, #eee); color: var(--secondary-text-color); border: 1px solid var(--divider-color, #ccc); }
   .empty { padding: 18px; text-align: center; color: var(--secondary-text-color); border: 1px dashed var(--divider-color, #ccc); border-radius: 8px; }
   .add .lab select { width: 100%; }
   .kfedit { padding: 10px 12px; margin-bottom: 10px; border-radius: 8px; background: var(--secondary-background-color, #f5f5f5); }
@@ -1245,7 +1300,38 @@ const STYLE = `
   }
 `;
 
+class FadeStudioCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = { ...(config || {}) };
+    this._render();
+  }
+  set hass(h) {
+    this._hass = h;
+  }
+  _render() {
+    if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
+    const cur = IKEA_MODES[this._config.ikea_mode] ? this._config.ikea_mode : 'split';
+    this.shadowRoot.innerHTML = `
+      <style>
+        label { display: block; font-weight: 500; margin-bottom: 6px; }
+        select { font: inherit; width: 100%; padding: 8px; border-radius: 6px; color: var(--primary-text-color);
+          background: var(--card-background-color, #fff); border: 1px solid var(--divider-color, #ccc); }
+        p { color: var(--secondary-text-color); font-size: .9em; }
+      </style>
+      <label for="ikea">IKEA-Lampen (automatisch erkannt)</label>
+      <select id="ikea">${Object.entries(IKEA_MODES)
+        .map(([v, t]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${t}</option>`)
+        .join('')}</select>
+      <p>Gilt für neu angelegte Spuren und Vorlagen. Bestehende Spuren lassen sich einzeln über „nacheinander“ bzw. den Spur-Modus ändern.</p>`;
+    this.shadowRoot.querySelector('#ikea').addEventListener('change', (e) => {
+      this._config = { ...this._config, ikea_mode: e.target.value };
+      this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: this._config }, bubbles: true, composed: true }));
+    });
+  }
+}
+
 customElements.define('fade-studio-card', FadeStudioCard);
+customElements.define('fade-studio-card-editor', FadeStudioCardEditor);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'fade-studio-card',

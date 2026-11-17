@@ -20,7 +20,8 @@ Abgespielt wird ausschließlich von Home Assistant selbst. Jeder Abschnitt der Z
 
 - Spuren pro Lampe oder Gruppe, Punkte per Klick setzen und ziehen (Zeit ↔ Helligkeit)
 - Modi pro Spur: **Weißton** (Kelvin), **Farbe**, **nur Helligkeit** – automatisch passend zur Lampe
-- **IKEA-Modus**: erst Farbe, dann Helligkeit (für Lampen, die beides nicht gleichzeitig überblenden)
+- **IKEA-Lampen werden automatisch erkannt** (Hersteller bzw. Modell, auch über Hue Bridge und Matter) und standardmäßig „nacheinander“ überblendet: erst der Ton, dann die Helligkeit. Pro Spur abschaltbar.
+- Durchgehender **Abspiel-Strich** mit Zeitanzeige, während ein Ablauf läuft
 - Endlosschleife (nahtlos), Einblenden, Ende-Verhalten: vorherigen Zustand wiederherstellen, halten, ausblenden, Szene
 - Gesamthelligkeit live regelbar – ohne Sprung (Restzeit wird neu berechnet)
 - Vorlagen **☁ Ambient Drift** (ruhiges, zeitversetztes Gleiten) und **≈ Breathe** (sanftes Pulsieren, als Welle durch die Räume)
@@ -45,6 +46,19 @@ type: custom:fade-studio-card
 ```
 
 Speichern erfordert Administratorrechte.
+
+### Einstellungen
+
+Im Dashboard-Editor (Karte bearbeiten) oder per YAML:
+
+```yaml
+type: custom:fade-studio-card
+ikea_mode: split   # split (Standard): erst Ton, dann Helligkeit
+                   # together: gleichzeitig wie andere Lampen
+                   # brightness: nur Helligkeit, Ton bleibt unverändert
+```
+
+Die Einstellung gilt für neu angelegte Spuren und Vorlagen.
 
 ## Abläufe verwenden
 
