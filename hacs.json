@@ -1,6 +1,6 @@
 {
-  "name": "Lightline",
-  "filename": "lightline-card.js",
+  "name": "Fade Studio",
+  "filename": "fade-studio-card.js",
   "render_readme": true,
   "homeassistant": "2025.4.0"
 }

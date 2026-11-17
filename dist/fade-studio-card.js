@@ -1,14 +1,14 @@
 /*
- * Lightline – Zeitleisten-Editor für sanfte Lichtabläufe in Home Assistant
+ * Fade Studio – Zeitleisten-Editor für sanfte Lichtabläufe in Home Assistant
  *
  * Die Karte ist nur ein Editor. Beim Speichern entstehen ganz normale
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
- * "Lightline". Abgespielt wird ausschließlich von Home Assistant selbst.
+ * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const LL_VERSION = '0.1.0';
-const PREFIX = 'lightline_';
-const LABEL = 'Lightline';
-const SNAP_SUFFIX = '_vorher';
+const FS_VERSION = '0.2.0';
+const PREFIX = 'fade_studio_';
+const LABEL = 'Fade Studio';
+const SNAP_SUFFIX = '_before';
 
 /* ------------------------------------------------------------------ */
 /* Hilfsfunktionen                                                     */
@@ -104,11 +104,11 @@ function stateAt(kfs, L, loop, t) {
   return lerpKf(last, k[0], span > 0 ? (t - last.t) / span : 0, t);
 }
 
-function displayRgb(kf, mode) {
-  let c = mode === 'color' ? hexToRgb(kf.c) : mode === 'ct' ? kelvinToRgb(kf.k) : [255, 214, 170];
-  if (kf.b <= 0) return [24, 24, 28];
-  const f = 0.15 + 0.85 * (kf.b / 100);
-  return c.map((v) => v * f);
+/** Ton in voller Leuchtkraft (Helligkeit wird separat als Kurve gezeigt). */
+function toneRgb(kf, mode) {
+  if (mode === 'color') return hexToRgb(kf.c);
+  if (mode === 'ct') return mixRgb(kelvinToRgb(kf.k), [255, 255, 255], 0.3);
+  return [255, 236, 210];
 }
 
 /* ------------------------------------------------------------------ */
@@ -330,7 +330,7 @@ function buildScript(show) {
   const lights = [...new Set(tracks.map((t) => t.entity))];
   const seq = [
     {
-      if: tpl('{{ beenden | default(false) | bool }}'),
+      if: tpl('{{ finish | default(false) | bool }}'),
       then: [...endActions(show, snap, lights), { stop: 'Beendet' }],
     },
   ];
@@ -343,21 +343,21 @@ function buildScript(show) {
   seq.push({ parallel: tracks.map((t, ti) => trackBranch(show, t, dimmer, ti)) });
   if (!show.loop) seq.push(...endActions(show, snap, lights));
   return {
-    alias: `Lightline: ${show.name}`,
+    alias: `Fade Studio: ${show.name}`,
     description:
-      'Erstellt mit der Lightline-Karte – bitte dort bearbeiten. ' +
-      'Starten: script.turn_on. Sanft beenden: script.turn_on mit variables: {beenden: true}.',
-    icon: show.icon || 'mdi:led-strip-variant',
+      'Erstellt mit der Fade-Studio-Karte – bitte dort bearbeiten. ' +
+      'Starten: script.turn_on. Sanft finish: script.turn_on mit variables: {finish: true}.',
+    icon: show.icon || 'mdi:transition',
     mode: 'restart',
     fields: {
-      beenden: {
-        name: 'Beenden',
-        description: 'An = laufenden Ablauf mit dem eingestellten Ende-Verhalten beenden.',
+      finish: {
+        name: 'Sanft beenden',
+        description: 'An = laufenden Ablauf mit dem eingestellten Ende-Verhalten finish.',
         selector: { boolean: {} },
         default: false,
       },
     },
-    variables: { lightline: { v: 1, editor: LL_VERSION, show } },
+    variables: { fade_studio: { v: 1, editor: FS_VERSION, show } },
     sequence: seq,
   };
 }
@@ -367,7 +367,7 @@ function buildScript(show) {
 /* ------------------------------------------------------------------ */
 const TINTS = ['#ffd2a8', '#ffc4b8', '#ffe2b0', '#f6d0e0', '#ffcf9e'];
 
-function genClouds(hass, eids, p) {
+function genDrift(hass, eids, p) {
   const L = p.cycle;
   const n = Math.max(2, Math.round(p.steps));
   return eids.map((eid, i) => {
@@ -390,7 +390,7 @@ function genClouds(hass, eids, p) {
   });
 }
 
-function genBreath(hass, eids, p) {
+function genBreathe(hass, eids, p) {
   const L = p.period;
   const areas = [...new Set(eids.map((e) => lightInfo(hass, e).area || e))];
   return eids.map((eid) => {
@@ -412,7 +412,7 @@ function genBreath(hass, eids, p) {
 /* ------------------------------------------------------------------ */
 const LANE_H = 64;
 
-class LightlineCard extends HTMLElement {
+class FadeStudioCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -497,8 +497,8 @@ class LightlineCard extends HTMLElement {
     const id = scriptEid.replace('script.', '');
     try {
       const cfg = await this._hass.callApi('GET', `config/script/config/${id}`);
-      const show = cfg?.variables?.lightline?.show;
-      if (!show) throw new Error('Dieses Skript enthält keine Lightline-Zeitleiste.');
+      const show = cfg?.variables?.fade_studio?.show;
+      if (!show) throw new Error('Dieses Skript enthält keine Fade-Studio-Zeitleiste.');
       this._show = { end: { mode: 'restore', fade: 5, scene: '' }, ...show, id };
       this._sel = null;
       this._dirty = false;
@@ -521,8 +521,8 @@ class LightlineCard extends HTMLElement {
     const created = await this._hass.callWS({
       type: 'config/label_registry/create',
       name: LABEL,
-      icon: 'mdi:led-strip-variant',
-      description: 'Von der Lightline-Karte erzeugt. Entfernen über "Alles entfernen" in der Karte.',
+      icon: 'mdi:transition',
+      description: 'Von der Fade-Studio-Karte erzeugt. Entfernen über "Alles entfernen" in der Karte.',
     });
     return created.label_id;
   }
@@ -610,7 +610,7 @@ class LightlineCard extends HTMLElement {
     const ids = this._showIds().map((e) => e.replace('script.', ''));
     if (
       !confirm(
-        `Alles von Lightline entfernen?\n\n${ids.length} Ablauf/Abläufe mit Skripten, Helligkeitsreglern und dem Label „${LABEL}" werden gelöscht. ` +
+        `Alles von Fade Studio entfernen?\n\n${ids.length} Ablauf/Abläufe mit Skripten, Helligkeitsreglern und dem Label „${LABEL}" werden gelöscht. ` +
           'Danach kannst du die Karte in HACS deinstallieren – es bleibt nichts zurück.'
       )
     )
@@ -639,11 +639,11 @@ class LightlineCard extends HTMLElement {
     const e = this._scriptEid();
     if (!e) return this._setMsg('Bitte zuerst speichern.');
     if (this._dirty) this._setMsg('Achtung: Es läuft die zuletzt gespeicherte Fassung.');
-    this._hass.callService('script', 'turn_on', { entity_id: e, variables: { beenden: false } });
+    this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: false } });
   }
   _stop() {
     const e = this._scriptEid();
-    if (e) this._hass.callService('script', 'turn_on', { entity_id: e, variables: { beenden: true } });
+    if (e) this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: true } });
   }
   _setDimmer(v) {
     const d = `input_number.${this._show.id}_dimmer`;
@@ -729,14 +729,14 @@ class LightlineCard extends HTMLElement {
       <style>${STYLE}</style>
       <ha-card>
         <div class="bar">
-          <span class="title">Lightline</span>
+          <span class="title">Fade Studio</span>
           <select id="showSel">
             <option value="">＋ Neuer Ablauf</option>
-            ${ids.map((e) => `<option value="${e}" ${e === this._scriptEid() ? 'selected' : ''}>${esc(h.states[e].attributes.friendly_name?.replace(/^Lightline: /, '') || e)}</option>`).join('')}
+            ${ids.map((e) => `<option value="${e}" ${e === this._scriptEid() ? 'selected' : ''}>${esc(h.states[e].attributes.friendly_name?.replace(/^Fade Studio: /, '') || e)}</option>`).join('')}
           </select>
           <span class="grow"></span>
-          <button data-gen="clouds" title="Vorlage: ruhige Wolken aus warmen und kühleren Weißtönen">☁ Wolken …</button>
-          <button data-gen="breath" title="Vorlage: sanftes Atmen/Pulsieren, als Welle durch die Räume">≈ Atmen …</button>
+          <button data-gen="drift" title="Vorlage: langsames, zeitversetztes Gleiten zwischen warmen und kühleren Tönen">☁ Ambient Drift …</button>
+          <button data-gen="breathe" title="Vorlage: sanftes Heller- und Dunklerwerden, als Welle durch die Räume">≈ Breathe …</button>
         </div>
 
         <div class="props">
@@ -801,7 +801,7 @@ class LightlineCard extends HTMLElement {
               </div>`;
             })
             .join('')}
-          ${s.tracks.length ? '' : `<div class="empty">Noch keine Spuren. Füge unten eine Lampe hinzu – oder starte mit einer Vorlage (☁ Wolken / ≈ Atmen).</div>`}
+          ${s.tracks.length ? '' : `<div class="empty">Noch keine Spuren. Füge unten eine Lampe hinzu – oder starte mit einer Vorlage (☁ Ambient Drift / ≈ Breathe).</div>`}
           <div class="row add">
             <div class="lab"><select id="addSel">${lightOpts('')}</select></div>
             <div><button id="addTrack">＋ Spur hinzufügen</button> <span class="hint">Klick in eine Spur setzt einen Punkt · Punkte lassen sich ziehen</span></div>
@@ -815,7 +815,7 @@ class LightlineCard extends HTMLElement {
           <button id="delete">${s.id ? 'Ablauf löschen' : 'Verwerfen'}</button>
           <span id="msg" class="msg">${esc(this._msg)}</span>
           <span class="grow"></span>
-          <button id="removeAll" class="danger" title="Löscht alle von Lightline erzeugten Skripte, Helfer und das Label">Alles entfernen</button>
+          <button id="removeAll" class="danger" title="Löscht alle von Fade Studio erzeugten Skripte, Helfer und das Label">Alles entfernen</button>
         </div>
         ${this._gen ? this._genHtml(lights) : ''}
       </ha-card>`;
@@ -863,9 +863,9 @@ class LightlineCard extends HTMLElement {
       `<label>${label} <input data-gp="${k}" type="number" min="${min}" max="${max}" step="${step}" value="${p[k]}"> ${unit}</label>`;
     const areas = [...new Set(lights.map((l) => l.area).filter(Boolean))];
     return `<div class="overlay"><div class="dialog">
-      <h3>${g.type === 'clouds' ? '☁ Wolken' : '≈ Atmen'}</h3>
+      <h3>${g.type === 'drift' ? '☁ Ambient Drift' : '≈ Breathe'}</h3>
       <p class="hint">${
-        g.type === 'clouds'
+        g.type === 'drift'
           ? 'Jede Lampe gleitet langsam und zeitversetzt zwischen warmen und etwas kühleren Tönen, hell und dunkel. Benachbarte Lampen sind nie gleich – wie ziehende Wolken.'
           : 'Alle Lampen werden sanft heller und dunkler, ohne ihre Farbe zu ändern. Mit „Versatz je Raum" läuft das Atmen als Welle durch die Wohnung.'
       }</p>
@@ -880,7 +880,7 @@ class LightlineCard extends HTMLElement {
       </div>
       <div class="genparams">
         ${
-          g.type === 'clouds'
+          g.type === 'drift'
             ? num('cycle', 'Zykluslänge', 's', 30, 3600, 10) +
               num('steps', 'Wechsel pro Zyklus', '', 2, 20) +
               num('kMin', 'Wärmster Ton', 'K', 1800, 6500, 50) +
@@ -919,20 +919,26 @@ class LightlineCard extends HTMLElement {
       const endKf = s.loop ? { ...stateAt(tr.kfs, L, true, L - 0.0001), t: L } : { ...k[k.length - 1], t: L };
       const pts = [...k, endKf];
       const stops = pts
-        .map((p) => `<stop offset="${(p.t / L) * 100}%" stop-color="${rgbToHex(displayRgb(p, tr.mode))}"/>`)
+        .map((p) => `<stop offset="${(p.t / L) * 100}%" stop-color="${rgbToHex(toneRgb(p, tr.mode))}"/>`)
         .join('');
       const poly = pts.map((p) => `${x(p.t).toFixed(1)},${y(p.b).toFixed(1)}`).join(' ');
+      // Nur die Fläche unterhalb der Helligkeitskurve zeigt den Lichtton (wie eine Hüllkurve).
+      const fill = `0,${H} ${poly} ${W},${H}`;
       const circles = tr.kfs
         .map((kf, ki) => {
           const selected = this._sel && this._sel.ti === ti && this._sel.ki === ki;
-          return `<circle class="kf ${selected ? 'sel' : ''}" data-ki="${ki}" cx="${x(kf.t)}" cy="${y(kf.b)}" r="${selected ? 9 : 7}" fill="${rgbToHex(displayRgb({ ...kf, b: Math.max(kf.b, 60) }, tr.mode))}"/>`;
+          return `<circle class="kf ${selected ? 'sel' : ''}" data-ki="${ki}" cx="${x(kf.t)}" cy="${y(kf.b)}" r="${selected ? 9 : 7}" fill="${rgbToHex(toneRgb(kf, tr.mode))}"/>`;
         })
         .join('');
       lane.innerHTML = `<svg width="${W}" height="${H}">
         <defs><linearGradient id="g${ti}">${stops}</linearGradient></defs>
-        <rect class="bg" x="0" y="0" width="${W}" height="${H}" rx="6" fill="url(#g${ti})"/>
-        <polyline points="${poly}" fill="none" stroke="rgba(0,0,0,.45)" stroke-width="4"/>
-        <polyline points="${poly}" fill="none" stroke="rgba(255,255,255,.9)" stroke-width="1.5"/>
+        <clipPath id="c${ti}"><rect x="0" y="0" width="${W}" height="${H}" rx="6"/></clipPath>
+        <g clip-path="url(#c${ti})">
+          <rect class="bg" x="0" y="0" width="${W}" height="${H}"/>
+          <polygon points="${fill}" fill="url(#g${ti})"/>
+        </g>
+        <polyline points="${poly}" fill="none" stroke="rgba(0,0,0,.35)" stroke-width="3.5"/>
+        <polyline points="${poly}" fill="none" stroke="#fff" stroke-width="1.5"/>
         ${circles}
       </svg><div class="playhead"></div>`;
       const svg = lane.querySelector('svg');
@@ -1120,7 +1126,7 @@ class LightlineCard extends HTMLElement {
           type,
           lights: current,
           p:
-            type === 'clouds'
+            type === 'drift'
               ? { cycle: 300, steps: 5, kMin: 2200, kMax: 3400, bMin: 15, bMax: 60, tint: false }
               : { period: 10, depth: 30, base: 70, wave: 2 },
         };
@@ -1150,16 +1156,16 @@ class LightlineCard extends HTMLElement {
       on('#genOk', 'click', () => {
         const g = this._gen;
         if (!g.lights.length) return alert('Bitte mindestens eine Lampe wählen.');
-        if (g.type === 'clouds') {
+        if (g.type === 'drift') {
           if (g.p.kMin > g.p.kMax) [g.p.kMin, g.p.kMax] = [g.p.kMax, g.p.kMin];
           if (g.p.bMin > g.p.bMax) [g.p.bMin, g.p.bMax] = [g.p.bMax, g.p.bMin];
           s.length = g.p.cycle;
-          s.tracks = genClouds(this._hass, g.lights, g.p);
-          if (s.name === 'Neuer Ablauf') s.name = 'Wolken';
+          s.tracks = genDrift(this._hass, g.lights, g.p);
+          if (s.name === 'Neuer Ablauf') s.name = 'Ambient Drift';
         } else {
           s.length = g.p.period;
-          s.tracks = genBreath(this._hass, g.lights, g.p);
-          if (s.name === 'Neuer Ablauf') s.name = 'Atmen';
+          s.tracks = genBreathe(this._hass, g.lights, g.p);
+          if (s.name === 'Neuer Ablauf') s.name = 'Breathe';
         }
         s.loop = true;
         this._gen = null;
@@ -1206,8 +1212,9 @@ const STYLE = `
   .small { font-size: .85em; }
   .lane { position: relative; height: ${LANE_H}px; min-width: 0; touch-action: none; }
   .lane svg { display: block; cursor: crosshair; position: absolute; left: 0; top: 0; }
-  .lane .bg { stroke: var(--divider-color, #ccc); }
-  .kf { stroke: #fff; stroke-width: 2; cursor: grab; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
+  .lane .bg { fill: var(--secondary-background-color, #e8e8ec); }
+  .lane svg { border-radius: 6px; outline: 1px solid var(--divider-color, #ccc); }
+  .kf { stroke: #333; stroke-width: 2; cursor: grab; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
   .kf.sel { stroke: var(--primary-color, #03a9f4); stroke-width: 3; }
   .ruler { margin-bottom: 0; }
   .rulerlane { height: 18px; }
@@ -1238,15 +1245,15 @@ const STYLE = `
   }
 `;
 
-customElements.define('lightline-card', LightlineCard);
+customElements.define('fade-studio-card', FadeStudioCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
-  type: 'lightline-card',
-  name: 'Lightline',
+  type: 'fade-studio-card',
+  name: 'Fade Studio',
   description: 'Zeitleisten-Editor für sanfte, animierte Lichtabläufe',
   preview: false,
 });
-if (typeof window.document !== 'undefined') console.info(`%c LIGHTLINE %c ${LL_VERSION} `, 'background:#ff9f43;color:#000', 'background:#333;color:#fff');
+if (typeof window.document !== 'undefined') console.info(`%c FADE STUDIO %c ${FS_VERSION} `, 'background:#ff9f43;color:#000', 'background:#333;color:#fff');
 
 // Für Tests in Node
-if (typeof module !== 'undefined') module.exports = { buildScript, compileTrack, normalizeKfs, stateAt, genClouds, genBreath };
+if (typeof module !== 'undefined') module.exports = { buildScript, compileTrack, normalizeKfs, stateAt, genDrift, genBreathe };
