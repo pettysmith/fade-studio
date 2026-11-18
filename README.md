@@ -27,11 +27,18 @@ Abgespielt wird ausschließlich von Home Assistant selbst. Jeder Abschnitt der Z
 - Endlosschleife (nahtlos), Einblenden, Ende-Verhalten: vorherigen Zustand wiederherstellen, halten, ausblenden, Szene
 - Gesamthelligkeit live regelbar – ohne Sprung (Restzeit wird neu berechnet)
 - Durchgehender **Abspiel-Strich** mit Zeitanzeige
-- Vorlagen:
-  - **☁ Ambient Drift** – ruhiges, zeitversetztes Gleiten zwischen hell/kühler und dunkel/wärmer (Standard 90 s)
+- **Start / Pause / Weiter**: Pause hält die Lampen, wie sie gerade sind; „Weiter“ macht an derselben Stelle der Zeitleiste weiter
+- Vorlagen (Auswahlliste „＋ Vorlage …“, alle wiederholen sich spätestens nach 60 s):
+  - **☁ Ambient Drift** – ruhiges, zeitversetztes Gleiten zwischen hell/kühler und dunkel/wärmer
+  - **🕯 Candle Glow** – sehr warmes Licht, das unregelmäßig und weich auf- und abschwillt, jede Lampe für sich
   - **≈ Breathe** – sanftes Heller und Dunkler, als Welle durch die Räume
-  - **✦ Color Accent** – pro Raum eine Farblampe mit zügigen, kontrastreichen Farbwechseln; die übrigen Lampen bleiben ruhig in gedimmtem Warmweiß
-  - **〰 Ripple** – ein heller Impuls wandert flott von Lampe zu Lampe, starker Hell-Dunkel-Kontrast
+  - **🌇 Dusk** – Farblampen ziehen durch Bernstein, Koralle, Rosé, Violett; Weiß-Lampen gedämpft warm
+  - **🌌 Aurora** – Farblampen gleiten durch Türkis, Grün, Blau, Violett; Weiß-Lampen schwach kühl
+  - **✦ Color Accent** – pro Raum eine Farblampe mit zügigen, kontrastreichen Farbwechseln; die übrigen ruhig warmweiß
+  - **⇅ Seesaw** – zwei Hälften wechseln sich ab: eine hell, die andere dunkel
+  - **〰 Ripple** – ein heller Impuls wandert der Reihe nach über die Lampen
+  - **✧ Twinkle** – mal hier, mal dort leuchtet eine Lampe kurz auf
+- Farbige IKEA-Lampen bekommen in Vorlagen standardmäßig Weißtöne statt Farben (ruhiger); umstellbar in ⚙. Farben gehen als xy-Werte an die Lampen.
 - **Automatisch stoppen** (⚙ Einstellungen):
   - wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird (Schalter, App, Sprachbefehl, „Alles aus“) – der Ablauf erkennt das selbst. Danach wahlweise alle Lampen des Ablaufs ausschalten (Standard, mit Nachkontrolle nach 2 s) oder nur die ausgeschalteten aus lassen
   - wenn niemand mehr zu Hause ist (`zone.home` wird 0) – danach wahlweise ausschalten, vorherigen Zustand wiederherstellen oder so lassen

@@ -5,12 +5,12 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.5.0';
+const FS_VERSION = '0.6.0';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
 const AUTO_ID = 'fade_studio_autostop';
-const DEFAULT_SETTINGS = { ikea_mode: 'split', stop_away: true, away_action: 'off', stop_external_off: true, off_action: 'all' };
+const DEFAULT_SETTINGS = { ikea_mode: 'split', ikea_color: 'white', stop_away: true, away_action: 'off', stop_external_off: true, off_action: 'all' };
 
 /* ------------------------------------------------------------------ */
 /* Hilfsfunktionen                                                     */
@@ -60,6 +60,17 @@ function hexToRgb(h) {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 const mixRgb = (a, b, f) => a.map((v, i) => v + (b[i] - v) * f);
+/** sRGB -> CIE xy. Farben gehen als xy an die Lampen: Hue arbeitet nativ damit, Übergänge laufen gerader. */
+function rgbToXy([r, g, b]) {
+  const lin = (v) => ((v /= 255) > 0.04045 ? Math.pow((v + 0.055) / 1.055, 2.4) : v / 12.92);
+  const [R, G, B] = [lin(r), lin(g), lin(b)];
+  const X = R * 0.4124 + G * 0.3576 + B * 0.1805;
+  const Y = R * 0.2126 + G * 0.7152 + B * 0.0722;
+  const Z = R * 0.0193 + G * 0.1192 + B * 0.9505;
+  const sum = X + Y + Z;
+  if (!sum) return [0.3127, 0.329];
+  return [Math.round((X / sum) * 10000) / 10000, Math.round((Y / sum) * 10000) / 10000];
+}
 
 function lerpKf(a, b, f, t) {
   return {
@@ -182,7 +193,11 @@ const IKEA_MODES = {
   together: 'Gleichzeitig wie andere Lampen',
   brightness: 'Nur Helligkeit, Ton bleibt',
 };
-function trackDefaults(info, preferred, ikeaMode = 'split') {
+function trackDefaults(info, preferred, ctx = {}) {
+  const c = typeof ctx === 'string' ? { ikeaMode: ctx } : ctx || {};
+  const ikeaMode = c.ikeaMode || 'split';
+  // IKEA-Farblampen zeigen zarte Farbübergänge oft sprunghaft -> standardmäßig Weißtöne statt Farbe.
+  if (preferred === 'color' && info.ikea && c.ikeaColor !== 'color') preferred = 'ct';
   let mode = modeFor(info, preferred);
   let split = false;
   if (info.ikea && mode !== 'bri') {
@@ -206,7 +221,7 @@ function modeFor(info, preferred) {
 function stateOf(kf, mode) {
   const s = { b: Math.round(clamp(kf.b, 0, 100)) };
   if (mode === 'ct') s.k = Math.round(kf.k);
-  if (mode === 'color') s.c = hexToRgb(kf.c);
+  if (mode === 'color') s.c = rgbToXy(hexToRgb(kf.c));
   return s;
 }
 
@@ -216,11 +231,11 @@ function compileTrack(show, tr) {
   const steps = [];
   for (let i = 1; i < k.length; i++) {
     const d = r1(k[i].t - k[i - 1].t);
-    if (d >= 0.1) steps.push({ d, s: stateOf(k[i], tr.mode) });
+    if (d >= 0.1) steps.push({ d, e: r1(k[i].t), s: stateOf(k[i], tr.mode) });
   }
   const last = k[k.length - 1];
   const tail = r1(L - last.t);
-  if (tail >= 0.1) steps.push({ d: tail, s: stateOf(show.loop ? k[0] : last, tr.mode) });
+  if (tail >= 0.1) steps.push({ d: tail, e: r1(L), s: stateOf(show.loop ? k[0] : last, tr.mode) });
   return { first: stateOf(k[0], tr.mode), steps };
 }
 
@@ -240,7 +255,7 @@ function lightData(mode, part, dimmer, ti) {
     d.brightness_pct = `{{ [1, (${cur}.b * (states('${dimmer}') | float(100)) / 100) | round(0) | int] | max }}`;
   if (part !== 'bri') {
     if (mode === 'ct') d.color_temp_kelvin = `{{ ${cur}.k }}`;
-    if (mode === 'color') d.rgb_color = `{{ ${cur}.c }}`;
+    if (mode === 'color') d.xy_color = `{{ ${cur}.c }}`;
   }
   return d;
 }
@@ -344,29 +359,39 @@ function segmentActions(entity, mode, split, dimmer, ti, o) {
 }
 
 function trackBranch(show, tr, dimmer, ti, o) {
-  const [trv, cur, dur] = ['tr', 'cur', 'dur'].map((n) => V(n, ti));
+  const [trv, cur, dur, off] = ['tr', 'cur', 'dur', 'off'].map((n) => V(n, ti));
   const c = compileTrack(show, tr);
   const seg = segmentActions(tr.entity, tr.mode, !!tr.split, dimmer, ti, o);
   const preOnData = { brightness_pct: 1, transition: 0 };
   if (tr.mode === 'ct') preOnData.color_temp_kelvin = `{{ ${trv}.first.k }}`;
-  if (tr.mode === 'color') preOnData.rgb_color = `{{ ${trv}.first.c }}`;
-  const body = {
-    repeat: {
-      for_each: `{{ ${trv}.steps }}`,
-      sequence: [{ variables: { [cur]: '{{ repeat.item.s }}', [dur]: '{{ repeat.item.d }}' } }, ...seg],
+  if (tr.mode === 'color') preOnData.xy_color = `{{ ${trv}.first.c }}`;
+  // Ein Durchlauf. Beim Fortsetzen nach einer Pause (start_at) beginnt der erste Durchlauf an der
+  // gemerkten Stelle: Der laufende Abschnitt wird mit seiner Restzeit zu Ende geführt – kein Sprung.
+  const body = [
+    {
+      repeat: {
+        for_each: `{{ ${trv}.steps | selectattr('e', 'gt', ${off} + 0.05) | list }}`,
+        sequence: [{ variables: { [cur]: '{{ repeat.item.s }}', [dur]: `{{ [repeat.item.d, repeat.item.e - ${off}] | min }}` } }, ...seg],
+      },
     },
-  };
+    { variables: { [off]: 0 } },
+  ];
   return {
     sequence: [
-      { variables: { [trv]: c } },
+      { variables: { [trv]: c, [off]: `{{ [start_at | default(0) | float(0), 0] | max }}` } },
       {
-        // Ausgeschaltete Lampe: erst ganz dunkel in der Zielfarbe einschalten, dann einblenden – kein Farbsprung.
-        if: tpl(`{{ is_state('${tr.entity}', 'off') and ${trv}.first.b > 0 }}`),
-        then: [{ action: 'light.turn_on', target: { entity_id: tr.entity }, data: preOnData }],
+        if: tpl(`{{ ${off} == 0 }}`),
+        then: [
+          {
+            // Ausgeschaltete Lampe: erst ganz dunkel in der Zielfarbe einschalten, dann einblenden – kein Farbsprung.
+            if: tpl(`{{ is_state('${tr.entity}', 'off') and ${trv}.first.b > 0 }}`),
+            then: [{ action: 'light.turn_on', target: { entity_id: tr.entity }, data: preOnData }],
+          },
+          { variables: { [cur]: `{{ ${trv}.first }}`, [dur]: Math.max(1, show.fadeIn || 1) } },
+          ...seg,
+        ],
       },
-      { variables: { [cur]: `{{ ${trv}.first }}`, [dur]: Math.max(1, show.fadeIn || 1) } },
-      ...seg,
-      show.loop ? { repeat: { while: tpl('{{ true }}'), sequence: [body] } } : body,
+      ...(show.loop ? [{ repeat: { while: tpl('{{ true }}'), sequence: body } }] : body),
     ],
   };
 }
@@ -431,6 +456,11 @@ function buildScript(show, settings = DEFAULT_SETTINGS, play = null) {
     icon: show.icon || 'mdi:transition',
     mode: 'restart',
     fields: {
+      start_at: {
+        name: 'Fortsetzen ab (s)',
+        description: 'Optional: an dieser Stelle der Zeitleiste weitermachen (z. B. nach einer Pause).',
+        selector: { number: { min: 0, max: 3600, step: 0.1, mode: 'box' } },
+      },
       finish: {
         name: 'Sanft beenden',
         description: 'An = laufenden Ablauf mit dem eingestellten Ende-Verhalten beenden.',
@@ -458,7 +488,7 @@ function buildAutomation(settings, shows) {
   triggers.push({ trigger: 'event', event_type: 'fade_studio_stop', id: 'ext_off' });
   // Hart gestoppte Abläufe (z. B. im Skript-Editor) hinterlassen ihren Schnappschuss – aufräumen.
   if (Object.keys(shows).length)
-    triggers.push({ trigger: 'state', entity_id: Object.keys(shows).sort(), from: 'on', to: 'off', id: 'ended', for: { seconds: 10 } });
+    triggers.push({ trigger: 'state', entity_id: Object.keys(shows).sort(), from: 'on', to: 'off', id: 'ended', for: { minutes: 30 } });
   const snapVars = { variables: { snap: `{{ 'scene.' ~ repeat.item.split('.')[1] ~ '${SNAP_SUFFIX}' }}` } };
   const delSnap = {
     if: tpl('{{ state_attr(snap, "entity_id") is not none }}'),
@@ -562,105 +592,159 @@ function byArea(hass, eids) {
   return [...groups.values()];
 }
 
+const MAX_LEN = 60; // keine Vorlage läuft länger als eine Minute, bevor sie sich wiederholt
+const ctKf = (info, t, b, k) => {
+  const kk = Math.round(clamp(k, info.minK, info.maxK));
+  return { t: r1(t), b: r1(clamp(b, 0, 100)), k: kk, c: rgbToHex(kelvinToRgb(kk)) };
+};
+const wrap = (t, L) => r1(((t % L) + L) % L);
+const sortKfs = (kfs) => kfs.sort((a, b) => a.t - b.t);
+/** Kann diese Lampe (laut Einstellungen) Farben zeigen? */
+const showsColor = (info, ctx) => info.color && !info.isGroup && !(info.ikea && ctx?.ikeaColor !== 'color');
+
 /** Ambient Drift: zeitversetztes Gleiten, abwechselnd heller (etwas kühler) und dunkler (wärmer). */
-function genDrift(hass, eids, p, ikeaMode) {
-  const L = p.cycle;
+function genDrift(hass, eids, p, ctx) {
+  const L = clamp(p.cycle, 10, MAX_LEN);
   const n = Math.max(2, 2 * Math.round(p.steps / 2)); // gerade Anzahl -> hell/dunkel wechseln sich sauber ab
   const range = p.bMax - p.bMin;
   return eids.map((eid, i) => {
     const info = lightInfo(hass, eid);
-    const { mode, split } = trackDefaults(info, p.tint ? 'color' : 'ct', ikeaMode);
+    const { mode, split } = trackDefaults(info, p.tint ? 'color' : 'ct', ctx);
     const offset = ((i / Math.max(1, eids.length)) * L) / n + (i % 2) * (L / n);
     const kMin = clamp(p.kMin, info.minK, info.maxK);
     const kMax = clamp(p.kMax, info.minK, info.maxK);
     const kfs = [];
     for (let j = 0; j < n; j++) {
-      const t = r1(((j + rand(-0.2, 0.2)) * (L / n) + offset + L) % L);
-      const high = j % 2 === 0;
-      const f = high ? rand(0.65, 1) : rand(0, 0.3);
+      const t = wrap((j + rand(-0.2, 0.2)) * (L / n) + offset, L);
+      const f = j % 2 === 0 ? rand(0.65, 1) : rand(0, 0.3);
       const b = r1(p.bMin + f * range);
       const k = Math.round(kMin + clamp(0.75 * f + rand(-0.15, 0.25), 0, 1) * (kMax - kMin));
       const base = kelvinToRgb(k);
       const c = rgbToHex(p.tint ? mixRgb(base, hexToRgb(TINTS[(i + j) % TINTS.length]), 0.45) : base);
       kfs.push({ t, b, k, c });
     }
-    return { entity: eid, mode, split, kfs: kfs.sort((a, b) => a.t - b.t) };
+    return { entity: eid, mode, split, kfs: sortKfs(kfs) };
   });
 }
 
 function genBreathe(hass, eids, p) {
-  const L = p.period;
+  const L = clamp(p.period, 2, MAX_LEN);
   const areas = [...new Set(eids.map((e) => lightInfo(hass, e).area || e))];
   return eids.map((eid) => {
     const info = lightInfo(hass, eid);
     const idx = areas.indexOf(info.area || eid);
-    const phase = (((idx * p.wave) % L) + L) % L;
-    const hi = p.base;
-    const lo = r1(p.base * (1 - p.depth / 100));
+    const phase = wrap(idx * p.wave, L);
     const kfs = [
-      { ...DEFAULT_KF, t: r1(phase), b: hi },
-      { ...DEFAULT_KF, t: r1((phase + L / 2) % L), b: lo },
-    ].sort((a, b) => a.t - b.t);
-    return { entity: eid, mode: 'bri', split: false, kfs };
+      { ...DEFAULT_KF, t: phase, b: p.base },
+      { ...DEFAULT_KF, t: wrap(phase + L / 2, L), b: r1(p.base * (1 - p.depth / 100)) },
+    ];
+    return { entity: eid, mode: 'bri', split: false, kfs: sortKfs(kfs) };
   });
 }
 
 /** Color Accent: pro Raum eine Farblampe wechselt zügig und kontrastreich die Farbe, die übrigen bleiben ruhig. */
-function genAccent(hass, eids, p, ikeaMode) {
+function genAccent(hass, eids, p, ctx) {
   const colors = (PALETTES[p.palette] || PALETTES.sunset).colors;
-  const L = r1(colors.length * p.change);
+  const change = Math.min(p.change, MAX_LEN / colors.length);
+  const L = r1(colors.length * change);
   const tracks = [];
   byArea(hass, eids).forEach((group, gi) => {
-    const accent = group.find((e) => lightInfo(hass, e).color && !lightInfo(hass, e).isGroup);
-    const shift = (gi * p.change) / 2;
+    const accent = group.find((e) => showsColor(lightInfo(hass, e), ctx));
+    const shift = (gi * change) / 2;
     group.forEach((eid, li) => {
       const info = lightInfo(hass, eid);
       if (eid === accent) {
-        const { split } = trackDefaults(info, 'color', ikeaMode);
-        const kfs = colors.map((c, j) => ({
-          t: r1((j * p.change + shift) % L),
-          b: j % 2 === 0 ? p.hi : p.lo,
-          k: 2700,
-          c,
-        }));
-        tracks.push({ entity: eid, mode: ikeaMode === 'brightness' && info.ikea ? 'bri' : 'color', split, kfs: kfs.sort((a, b) => a.t - b.t) });
+        const { split } = trackDefaults(info, 'color', { ...ctx, ikeaColor: 'color' });
+        const kfs = colors.map((c, j) => ({ t: wrap(j * change + shift, L), b: j % 2 === 0 ? p.hi : p.lo, k: 2700, c }));
+        tracks.push({ entity: eid, mode: 'color', split, kfs: sortKfs(kfs) });
       } else {
-        const { mode, split } = trackDefaults(info, 'ct', ikeaMode);
-        const k1 = clamp(2300, info.minK, info.maxK);
-        const k2 = clamp(2700, info.minK, info.maxK);
+        const { mode, split } = trackDefaults(info, 'ct', ctx);
         const o = (li * L) / 4;
-        tracks.push({
-          entity: eid,
-          mode,
-          split,
-          kfs: [
-            { t: r1(o % L), b: p.calm, k: k1, c: rgbToHex(kelvinToRgb(k1)) },
-            { t: r1((o + L / 2) % L), b: r1(p.calm * 0.7), k: k2, c: rgbToHex(kelvinToRgb(k2)) },
-          ].sort((a, b) => a.t - b.t),
-        });
+        tracks.push({ entity: eid, mode, split, kfs: sortKfs([ctKf(info, wrap(o, L), p.calm, 2300), ctKf(info, wrap(o + L / 2, L), p.calm * 0.7, 2700)]) });
       }
     });
   });
   return { tracks, length: L };
 }
 
-/** Ripple: ein heller Impuls wandert nacheinander über die Lampen – starker Kontrast, Farbe bleibt. */
-function genRipple(hass, eids, p) {
-  const order = byArea(hass, eids).flat();
+/** Ripple / Twinkle: ein heller Impuls wandert über die Lampen – der Reihe nach oder zufällig. */
+function genPulseRun(hass, eids, p, shuffle) {
+  let order = byArea(hass, eids).flat();
+  if (shuffle) order = order.map((e) => [Math.random(), e]).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
   const n = order.length;
-  const st = p.step;
-  const L = r1(Math.max(n * st, 3 * st));
+  const st = Math.min(p.step, MAX_LEN / Math.max(3, n));
+  const L = r1(Math.max(n, 3) * st);
   const tracks = order.map((eid, i) => {
     const peak = i * st;
     const kfs = [
-      { ...DEFAULT_KF, t: r1((peak - st + L) % L), b: p.lo },
-      { ...DEFAULT_KF, t: r1(peak % L), b: p.hi },
-      { ...DEFAULT_KF, t: r1((peak + 1.5 * st) % L), b: p.lo },
-    ].sort((a, b) => a.t - b.t);
-    return { entity: eid, mode: 'bri', split: false, kfs };
+      { ...DEFAULT_KF, t: wrap(peak - st, L), b: p.lo },
+      { ...DEFAULT_KF, t: wrap(peak, L), b: p.hi },
+      { ...DEFAULT_KF, t: wrap(peak + (shuffle ? 1.2 : 1.5) * st, L), b: p.lo },
+    ];
+    return { entity: eid, mode: 'bri', split: false, kfs: sortKfs(kfs) };
   });
   return { tracks, length: L };
 }
+
+/** Candle Glow: sehr warmes Licht, das unregelmäßig und weich auf- und abschwillt – jede Lampe für sich. */
+function genCandle(hass, eids, p, ctx) {
+  const L = clamp(p.length, 10, MAX_LEN);
+  return eids.map((eid) => {
+    const info = lightInfo(hass, eid);
+    const { mode, split } = trackDefaults(info, 'ct', ctx);
+    const kfs = [];
+    let t = rand(0, p.speed);
+    while (t < L - p.speed * 0.6) {
+      const dip = Math.random() < 0.2 ? rand(0.5, 1) : rand(0, 0.45);
+      kfs.push(ctKf(info, t, p.base * (1 - (dip * p.depth) / 100), p.k + rand(-120, 160)));
+      t += p.speed * rand(0.7, 1.4);
+    }
+    return { entity: eid, mode, split, kfs: sortKfs(kfs) };
+  });
+}
+
+/** Dusk / Aurora: Farblampen ziehen langsam versetzt durch eine Palette, Weiß-Lampen bleiben gedämpft. */
+function genPalette(hass, eids, p, ctx, colors, whiteK) {
+  const step = Math.min(p.change, MAX_LEN / colors.length);
+  const L = r1(colors.length * step);
+  const colorLamps = eids.filter((e) => showsColor(lightInfo(hass, e), ctx));
+  return {
+    length: L,
+    tracks: eids.map((eid, i) => {
+      const info = lightInfo(hass, eid);
+      const ci = colorLamps.indexOf(eid);
+      if (ci >= 0) {
+        const { split } = trackDefaults(info, 'color', { ...ctx, ikeaColor: 'color' });
+        const shift = (ci * L) / Math.max(1, colorLamps.length) / 2;
+        const kfs = colors.map((c, j) => ({ t: wrap(j * step + shift, L), b: j % 2 === 0 ? p.hi : p.lo, k: 2700, c }));
+        return { entity: eid, mode: 'color', split, kfs: sortKfs(kfs) };
+      }
+      const { mode, split } = trackDefaults(info, 'ct', ctx);
+      const o = (i * L) / 3;
+      return { entity: eid, mode, split, kfs: sortKfs([ctKf(info, wrap(o, L), p.white, whiteK), ctKf(info, wrap(o + L / 2, L), p.white * 0.65, whiteK)]) };
+    }),
+  };
+}
+
+/** Seesaw: zwei Hälften wechseln sich ab – die eine wird hell, während die andere dunkel wird. */
+function genSeesaw(hass, eids, p) {
+  const L = clamp(p.period, 2, MAX_LEN);
+  const groups = byArea(hass, eids);
+  const side = new Map();
+  if (groups.length > 1) groups.forEach((g, gi) => g.forEach((e) => side.set(e, gi % 2)));
+  else eids.forEach((e, i) => side.set(e, i % 2));
+  return eids.map((eid) => {
+    const a = side.get(eid) ? L / 2 : 0;
+    const kfs = [
+      { ...DEFAULT_KF, t: wrap(a, L), b: p.hi },
+      { ...DEFAULT_KF, t: wrap(a + L / 2, L), b: p.lo },
+    ];
+    return { entity: eid, mode: 'bri', split: false, kfs: sortKfs(kfs) };
+  });
+}
+
+const DUSK = ['#ff8c3a', '#ff5a5a', '#ff4f8b', '#a35cff'];
+const AURORA = ['#00e0c0', '#3cff7a', '#2a7bff', '#8a4dff'];
 
 const num = (k, label, unit, min, max, step = 1) => ({ k, label, unit, min, max, step });
 const TEMPLATES = {
@@ -668,9 +752,9 @@ const TEMPLATES = {
     icon: '☁',
     name: 'Ambient Drift',
     desc: 'Jede Lampe gleitet ruhig und zeitversetzt zwischen hell (etwas kühler) und dunkel (wärmer). Benachbarte Lampen sind nie gleich – wie ziehende Wolken.',
-    defaults: { cycle: 90, steps: 6, kMin: 2200, kMax: 3400, bMin: 15, bMax: 70, tint: false },
+    defaults: { cycle: 60, steps: 6, kMin: 2200, kMax: 3400, bMin: 15, bMax: 70, tint: false },
     params: [
-      num('cycle', 'Zykluslänge', 's', 20, 1800, 5),
+      num('cycle', 'Zykluslänge', 's', 10, 60, 5),
       num('steps', 'Wechsel pro Zyklus', '', 2, 20, 2),
       num('kMin', 'Wärmster Ton', 'K', 1800, 6500, 50),
       num('kMax', 'Kühlster Ton', 'K', 1800, 6500, 50),
@@ -678,11 +762,25 @@ const TEMPLATES = {
       num('bMax', 'Hellste Stelle', '%', 1, 100),
       { k: 'tint', check: 'Farblampen mit zarten Farbtönen (Pfirsich, Rosé, Bernstein)' },
     ],
-    build(hass, eids, p, ikea) {
+    build(hass, eids, p, ctx) {
       if (p.kMin > p.kMax) [p.kMin, p.kMax] = [p.kMax, p.kMin];
       if (p.bMin > p.bMax) [p.bMin, p.bMax] = [p.bMax, p.bMin];
-      return { tracks: genDrift(hass, eids, p, ikea), length: p.cycle };
+      return { tracks: genDrift(hass, eids, p, ctx), length: clamp(p.cycle, 10, MAX_LEN) };
     },
+  },
+  candle: {
+    icon: '🕯',
+    name: 'Candle Glow',
+    desc: 'Sehr warmes Licht, das unregelmäßig und weich auf- und abschwillt – jede Lampe für sich, wie Kerzen im Raum. Ruhig, gut fürs Schlafzimmer und den Abend in der ganzen Wohnung.',
+    defaults: { length: 40, speed: 4, base: 45, depth: 30, k: 2200 },
+    params: [
+      num('length', 'Länge', 's', 10, 60, 5),
+      num('speed', 'Wechsel etwa alle', 's', 2, 15, 0.5),
+      num('base', 'Helligkeit', '%', 5, 100),
+      num('depth', 'Schwankung', '%', 5, 80),
+      num('k', 'Weißton', 'K', 1800, 3000, 50),
+    ],
+    build: (hass, eids, p, ctx) => ({ tracks: genCandle(hass, eids, p, ctx), length: clamp(p.length, 10, MAX_LEN) }),
   },
   breathe: {
     icon: '≈',
@@ -690,12 +788,28 @@ const TEMPLATES = {
     desc: 'Alle Lampen werden sanft heller und dunkler, ohne ihre Farbe zu ändern. Mit „Versatz je Raum" läuft das Atmen als Welle durch die Wohnung.',
     defaults: { period: 10, depth: 30, base: 70, wave: 2 },
     params: [
-      num('period', 'Atemzug', 's', 4, 120),
+      num('period', 'Atemzug', 's', 2, 60),
       num('depth', 'Tiefe', '%', 5, 90),
       num('base', 'Grundhelligkeit', '%', 5, 100),
-      num('wave', 'Versatz je Raum', 's', 0, 60, 0.5),
+      num('wave', 'Versatz je Raum', 's', 0, 30, 0.5),
     ],
-    build: (hass, eids, p) => ({ tracks: genBreathe(hass, eids, p), length: p.period }),
+    build: (hass, eids, p) => ({ tracks: genBreathe(hass, eids, p), length: clamp(p.period, 2, MAX_LEN) }),
+  },
+  dusk: {
+    icon: '🌇',
+    name: 'Dusk',
+    desc: 'Abendrot: Die Farblampen ziehen langsam und versetzt durch Bernstein, Koralle, Rosé und Violett. Alle Weiß-Lampen bleiben gedämpft in sehr warmem Licht.',
+    defaults: { change: 12, hi: 70, lo: 40, white: 25 },
+    params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Weiß-Lampen', '%', 0, 100)],
+    build: (hass, eids, p, ctx) => genPalette(hass, eids, p, ctx, DUSK, 2200),
+  },
+  aurora: {
+    icon: '🌌',
+    name: 'Aurora',
+    desc: 'Polarlicht: Die Farblampen gleiten versetzt durch Türkis, Grün, Blau und Violett. Weiß-Lampen leuchten schwach in kühlem Weiß – ein kühler Kontrast zu Dusk.',
+    defaults: { change: 12, hi: 75, lo: 35, white: 15 },
+    params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Weiß-Lampen', '%', 0, 100)],
+    build: (hass, eids, p, ctx) => genPalette(hass, eids, p, ctx, AURORA, 4000),
   },
   accent: {
     icon: '✦',
@@ -704,20 +818,36 @@ const TEMPLATES = {
     defaults: { palette: 'sunset', change: 8, hi: 90, lo: 35, calm: 25 },
     params: [
       { k: 'palette', select: Object.fromEntries(Object.entries(PALETTES).map(([k, v]) => [k, v.name])), label: 'Farben' },
-      num('change', 'Farbwechsel alle', 's', 2, 120),
+      num('change', 'Farbwechsel alle', 's', 2, 15),
       num('hi', 'Akzent hell', '%', 1, 100),
       num('lo', 'Akzent gedämpft', '%', 1, 100),
       num('calm', 'Übrige Lampen', '%', 1, 100),
     ],
-    build: (hass, eids, p, ikea) => genAccent(hass, eids, p, ikea),
+    build: (hass, eids, p, ctx) => genAccent(hass, eids, p, ctx),
+  },
+  seesaw: {
+    icon: '⇅',
+    name: 'Seesaw',
+    desc: 'Wippe: Die Lampen werden in zwei Hälften geteilt (bei mehreren Räumen raumweise, sonst abwechselnd). Eine Hälfte wird hell, während die andere dunkel wird – deutlicher Kontrast, Farben bleiben.',
+    defaults: { period: 8, hi: 85, lo: 15 },
+    params: [num('period', 'Ein Hin und Her', 's', 2, 60), num('hi', 'Hell', '%', 1, 100), num('lo', 'Dunkel', '%', 0, 100)],
+    build: (hass, eids, p) => ({ tracks: genSeesaw(hass, eids, p), length: clamp(p.period, 2, MAX_LEN) }),
   },
   ripple: {
     icon: '〰',
     name: 'Ripple',
     desc: 'Ein heller Lichtimpuls wandert nacheinander über die gewählten Lampen (nach Raum sortiert) – flotter Takt, starker Hell-Dunkel-Kontrast. Die Farben bleiben, wie sie sind.',
     defaults: { step: 2, hi: 90, lo: 8 },
-    params: [num('step', 'Takt je Lampe', 's', 1, 30, 0.5), num('hi', 'Impuls', '%', 1, 100), num('lo', 'Pause', '%', 0, 100)],
-    build: (hass, eids, p) => genRipple(hass, eids, p),
+    params: [num('step', 'Takt je Lampe', 's', 1, 20, 0.5), num('hi', 'Impuls', '%', 1, 100), num('lo', 'Pause', '%', 0, 100)],
+    build: (hass, eids, p) => genPulseRun(hass, eids, p, false),
+  },
+  twinkle: {
+    icon: '✧',
+    name: 'Twinkle',
+    desc: 'Funkeln: Mal hier, mal dort leuchtet eine Lampe kurz auf – in zufälliger Reihenfolge, die anderen bleiben gedimmt. Lebendiger als Ripple, Farben bleiben.',
+    defaults: { step: 2.5, hi: 80, lo: 20 },
+    params: [num('step', 'Abstand der Funken', 's', 1, 20, 0.5), num('hi', 'Funke', '%', 1, 100), num('lo', 'Grundlicht', '%', 0, 100)],
+    build: (hass, eids, p) => genPulseRun(hass, eids, p, true),
   },
 };
 
@@ -730,7 +860,19 @@ const LANE_H = 64;
  * Bearbeitungsstand außerhalb des Elements: Home Assistant baut Karten gelegentlich
  * neu auf (z. B. kurz nach dem Laden). Ungespeicherte Änderungen bleiben so erhalten.
  */
-const SESSION = { show: null, sel: null, dirty: false, msg: '', gen: null, settings: null, settingsOpen: false };
+const SESSION = { show: null, sel: null, dirty: false, msg: '', gen: null, settings: null, settingsOpen: false, paused: {}, playBase: {} };
+try {
+  SESSION.paused = JSON.parse(localStorage.getItem('fade-studio-paused') || '{}') || {};
+} catch (e) {
+  SESSION.paused = {};
+}
+const savePaused = () => {
+  try {
+    localStorage.setItem('fade-studio-paused', JSON.stringify(SESSION.paused));
+  } catch (e) {
+    /* privater Modus o. ä. */
+  }
+};
 
 class FadeStudioCard extends HTMLElement {
   constructor() {
@@ -756,6 +898,9 @@ class FadeStudioCard extends HTMLElement {
     const m = this._settings.ikea_mode;
     return IKEA_MODES[m] ? m : 'split';
   }
+  _genCtx() {
+    return { ikeaMode: this._ikeaMode(), ikeaColor: this._settings.ikea_color || 'white' };
+  }
   getCardSize() {
     return 10;
   }
@@ -778,11 +923,24 @@ class FadeStudioCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    if (this._keyH) window.removeEventListener('keydown', this._keyH);
+    this._keyH = null;
     clearInterval(this._timer);
     this._timer = null;
     this._ro?.disconnect();
   }
+  _onKey(e) {
+    if (e.key === 'Escape' && (SESSION.settingsOpen || this._gen)) {
+      SESSION.settingsOpen = false;
+      this._gen = null;
+      this._render();
+    }
+  }
   connectedCallback() {
+    if (!this._keyH) {
+      this._keyH = (e) => this._onKey(e);
+      window.addEventListener('keydown', this._keyH);
+    }
     if (this._hass && !this._timer) {
       this._render();
       this._timer = setInterval(() => this._tick(), 100);
@@ -972,6 +1130,7 @@ class FadeStudioCard extends HTMLElement {
           icon: 'mdi:brightness-6',
         });
         await this._addLabel(dimmer, labelId, { name: `${s.name} – Helligkeit` });
+        await this._hass.callService('input_number', 'set_value', { entity_id: dimmer, value: 100 }).catch(() => {});
       }
       for (const t of s.tracks) {
         const ids = lightInfo(this._hass, t.entity).members;
@@ -1054,15 +1213,46 @@ class FadeStudioCard extends HTMLElement {
   }
 
   /* ---------------- Abspielen ---------------- */
+  _paused() {
+    return this._show.id != null ? SESSION.paused[this._show.id] : undefined;
+  }
+  _playLabel() {
+    if (this._running()) return '⏸ Pause';
+    return this._paused() != null ? '▶ Weiter' : '▶ Start';
+  }
+  /** Start, Pause (Lampen bleiben, wie sie sind) oder Weiter an der gemerkten Stelle. */
   _play() {
     const e = this._scriptEid();
     if (!e) return this._setMsg('Bitte zuerst speichern.');
+    const id = this._show.id;
+    if (this._running()) {
+      const t = this._playTime() ?? 0;
+      SESSION.paused[id] = r1(t);
+      savePaused();
+      this._hass.callService('script', 'turn_off', { entity_id: e });
+      this._setMsg(`Pausiert bei ${fmtTime(t)} – die Lampen bleiben so. „Weiter" macht an dieser Stelle weiter.`);
+      return this._updateStatus();
+    }
     if (this._dirty) this._setMsg('Achtung: Es läuft die zuletzt gespeicherte Fassung.');
-    this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: false } });
+    if (Number(this._hass.states[`input_number.${id}_dimmer`]?.state) === 0)
+      this._setMsg('Hinweis: Die Gesamthelligkeit steht auf 0 % – die Lampen leuchten nur ganz schwach.');
+    const off = this._paused();
+    if (off != null) {
+      delete SESSION.paused[id];
+      savePaused();
+      SESSION.playBase[id] = { start: Date.now(), off, fade: 0 };
+      this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: false, start_at: off } });
+    } else {
+      SESSION.playBase[id] = { start: Date.now(), off: 0, fade: this._show.fadeIn || 0 };
+      this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: false } });
+    }
   }
   _stop() {
     const e = this._scriptEid();
-    if (e) this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: true } });
+    if (!e) return;
+    delete SESSION.paused[this._show.id];
+    savePaused();
+    this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: true } });
   }
   _setDimmer(v) {
     const d = `input_number.${this._show.id}_dimmer`;
@@ -1098,7 +1288,7 @@ class FadeStudioCard extends HTMLElement {
     if (kf.b <= 0) return this._hass.callService('light', 'turn_off', { entity_id: tr.entity, transition: 1.5 });
     const data = { entity_id: tr.entity, brightness_pct: Math.max(1, Math.round(kf.b)), transition: 1.5 };
     if (tr.mode === 'ct') data.color_temp_kelvin = Math.round(kf.k);
-    if (tr.mode === 'color') data.rgb_color = hexToRgb(kf.c);
+    if (tr.mode === 'color') data.xy_color = rgbToXy(hexToRgb(kf.c));
     this._hass.callService('light', 'turn_on', data);
   }
 
@@ -1117,8 +1307,12 @@ class FadeStudioCard extends HTMLElement {
   _updateStatus() {
     const root = this.shadowRoot;
     const st = root.querySelector('#status');
-    if (st) st.textContent = this._running() ? '● läuft' : '○ gestoppt';
-    st?.classList.toggle('on', this._running());
+    const run = this._running();
+    const pz = this._paused();
+    if (st) st.textContent = run ? '● läuft' : pz != null ? `⏸ pausiert bei ${fmtTime(pz)}` : '○ gestoppt';
+    st?.classList.toggle('on', run);
+    const pb = root.querySelector('#play');
+    if (pb) pb.textContent = this._playLabel();
     const dim = root.querySelector('#dimmer');
     const d = this._hass.states[`input_number.${this._show.id}_dimmer`];
     if (dim && d && root.activeElement !== dim) dim.value = d.state;
@@ -1126,12 +1320,20 @@ class FadeStudioCard extends HTMLElement {
 
   /** Aktuelle Position im laufenden Ablauf (Sekunden) oder null. Während des Einblendens: 0. */
   _playTime() {
-    if (!this._running()) return null;
-    const lt = this._hass.states[this._scriptEid()]?.attributes?.last_triggered;
-    if (!lt) return null;
     const s = this._show;
-    const t = (Date.now() - new Date(lt).getTime()) / 1000 - (s.fadeIn || 0);
-    if (t < 0) return 0;
+    if (!this._running()) {
+      const pz = this._paused();
+      return pz != null ? pz : null;
+    }
+    const lt = this._hass.states[this._scriptEid()]?.attributes?.last_triggered;
+    const ltMs = lt ? new Date(lt).getTime() : null;
+    let base = SESSION.playBase[s.id];
+    // Eigene Startzeit nur nutzen, wenn sie zum tatsächlichen Start passt (sonst wurde woanders gestartet).
+    if (!base || (ltMs && Math.abs(ltMs - base.start) > 4000)) base = ltMs ? { start: ltMs, off: 0, fade: s.fadeIn || 0 } : null;
+    if (!base) return null;
+    let t = (Date.now() - base.start) / 1000 - base.fade;
+    if (t < 0) return base.off;
+    t += base.off;
     return s.loop ? t % s.length : Math.min(t, s.length);
   }
 
@@ -1187,10 +1389,12 @@ class FadeStudioCard extends HTMLElement {
             ${ids.map((e) => `<option value="${e}" ${e === this._scriptEid() ? 'selected' : ''}>${esc(h.states[e].attributes.friendly_name?.replace(/^Fade Studio: /, '') || e)}</option>`).join('')}
           </select>
           <span class="grow"></span>
-          <span class="hint">Vorlage:</span>
-          ${Object.entries(TEMPLATES)
-            .map(([k, t]) => `<button data-gen="${k}" title="${esc(t.desc)}">${t.icon} ${esc(t.name)}</button>`)
-            .join('')}
+          <select id="genSel" title="Vorlage wählen – erzeugt Spuren für die gewählten Lampen">
+            <option value="">＋ Vorlage …</option>
+            ${Object.entries(TEMPLATES)
+              .map(([k, t]) => `<option value="${k}">${t.icon} ${esc(t.name)}</option>`)
+              .join('')}
+          </select>
           <button id="settings" class="icon gear" title="Einstellungen">⚙</button>
         </div>
 
@@ -1222,7 +1426,7 @@ class FadeStudioCard extends HTMLElement {
         </div>
 
         <div class="transport">
-          <button id="play" class="primary" ${s.id ? '' : 'disabled'}>▶ Start</button>
+          <button id="play" class="primary" ${s.id ? '' : 'disabled'}>${s.id ? this._playLabel() : '▶ Start'}</button>
           <button id="stop" ${s.id ? '' : 'disabled'}>■ Sanft stoppen</button>
           <span id="status" class="status">○ gestoppt</span>
           <span class="grow"></span>
@@ -1353,7 +1557,7 @@ class FadeStudioCard extends HTMLElement {
       return `<label>${esc(q.label)} <input data-gp="${q.k}" type="number" min="${q.min}" max="${q.max}" step="${q.step}" value="${p[q.k]}"> ${q.unit}</label>`;
     };
     return `<div class="overlay"><div class="dialog">
-      <h3>${T.icon} ${esc(T.name)}</h3>
+      <div class="dhead"><h3>${T.icon} ${esc(T.name)}</h3><button id="dlgX" class="close" title="Schließen (Esc)">✕</button></div>
       <p class="hint">${esc(T.desc)}</p>
       <div class="genlights">
         <div class="arearow">Raum wählen: ${areas.map((a) => `<button data-garea="${esc(a)}">${esc(a)}</button>`).join(' ')} <button data-garea="">keine</button></div>
@@ -1377,7 +1581,7 @@ class FadeStudioCard extends HTMLElement {
     const st = this._settings;
     const autoExists = !!this._autoEid();
     return `<div class="overlay"><div class="dialog settings">
-      <h3>⚙ Einstellungen</h3>
+      <div class="dhead"><h3>⚙ Einstellungen</h3><button id="dlgX" class="close" title="Schließen (Esc)">✕</button></div>
 
       <section>
         <h4>IKEA-Lampen</h4>
@@ -1387,7 +1591,13 @@ class FadeStudioCard extends HTMLElement {
             .map(([v, t]) => `<option value="${v}" ${st.ikea_mode === v ? 'selected' : ''}>${t}</option>`)
             .join('')}</select>
         </label>
-        <p class="hint">Gilt für neu angelegte Spuren und Vorlagen. Pro Spur lässt sich „nacheinander" jederzeit an- und abhaken.</p>
+        <label>Farbige IKEA-Lampen in Vorlagen:
+          <select id="stIkeaColor">
+            <option value="white" ${st.ikea_color !== 'color' ? 'selected' : ''}>Weißtöne statt Farben (empfohlen – ruhiger)</option>
+            <option value="color" ${st.ikea_color === 'color' ? 'selected' : ''}>Farben verwenden</option>
+          </select>
+        </label>
+        <p class="hint">Gilt für neu angelegte Spuren und Vorlagen. Pro Spur lassen sich Modus und „nacheinander" jederzeit ändern. Farben gehen als xy-Werte an die Lampen, das ergibt bei Hue die glattesten Übergänge.</p>
       </section>
 
       <section>
@@ -1412,7 +1622,7 @@ class FadeStudioCard extends HTMLElement {
 
       <div class="foot">
         <button id="stSave" class="primary">Speichern</button>
-        <button id="stClose">Schließen</button>
+        <button id="stClose" class="big">Schließen</button>
         <span class="grow"></span>
         <span class="hint">Fade Studio ${FS_VERSION}</span>
       </div>
@@ -1585,6 +1795,7 @@ class FadeStudioCard extends HTMLElement {
         const g = (id) => r.querySelector(id);
         await this._saveSettings({
           ikea_mode: g('#stIkea').value,
+          ikea_color: g('#stIkeaColor').value,
           stop_away: g('#stAway').checked,
           away_action: g('#stAwayAction').value,
           stop_external_off: g('#stOff').checked,
@@ -1598,7 +1809,7 @@ class FadeStudioCard extends HTMLElement {
       const eid = r.querySelector('#addSel').value;
       if (!eid) return;
       const info = lightInfo(this._hass, eid);
-      const { mode, split } = trackDefaults(info, 'ct', this._ikeaMode());
+      const { mode, split } = trackDefaults(info, 'ct', this._genCtx());
       const k = clamp(2700, info.minK, info.maxK);
       s.tracks.push({
         entity: eid,
@@ -1691,14 +1902,22 @@ class FadeStudioCard extends HTMLElement {
     }
 
     // Vorlagen
-    r.querySelectorAll('[data-gen]').forEach((el) =>
-      el.addEventListener('click', () => {
-        const type = el.dataset.gen;
-        const current = s.tracks.map((t) => t.entity);
-        this._gen = { type, lights: current, p: { ...TEMPLATES[type].defaults } };
-        this._render();
-      })
-    );
+    on('#genSel', 'change', (e) => {
+      const type = e.target.value;
+      if (!TEMPLATES[type]) return;
+      this._gen = { type, lights: s.tracks.map((t) => t.entity), p: { ...TEMPLATES[type].defaults } };
+      this._render();
+    });
+    // Dialoge: ✕, Tippen neben das Fenster oder Esc schließt
+    const closeDialogs = () => {
+      SESSION.settingsOpen = false;
+      this._gen = null;
+      this._render();
+    };
+    on('#dlgX', 'click', closeDialogs);
+    on('.overlay', 'click', (e) => {
+      if (e.target.classList.contains('overlay')) closeDialogs();
+    });
     if (this._gen) {
       r.querySelectorAll('[data-gl]').forEach((el) =>
         el.addEventListener('change', () => {
@@ -1723,7 +1942,7 @@ class FadeStudioCard extends HTMLElement {
         const g = this._gen;
         if (!g.lights.length) return alert('Bitte mindestens eine Lampe wählen.');
         const T = TEMPLATES[g.type];
-        const res = T.build(this._hass, g.lights, g.p, this._ikeaMode());
+        const res = T.build(this._hass, g.lights, g.p, this._genCtx());
         s.length = res.length;
         s.tracks = res.tracks;
         if (s.name === 'Neuer Ablauf' || Object.values(TEMPLATES).some((x) => x.name === s.name)) s.name = T.name;
@@ -1786,6 +2005,10 @@ const STYLE = `
   .phtime { position: absolute; top: -2px; left: 5px; font-size: .72em; font-weight: 600; padding: 0 4px; border-radius: 4px;
     background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); white-space: nowrap; }
   .gear { font-size: 1.3em; padding: 2px 8px; }
+  .dhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+  .dhead h3 { margin: 0; }
+  .close { font-size: 1.3em; line-height: 1; padding: 6px 12px; border-radius: 50%; }
+  .big { padding: 8px 20px; font-weight: 500; }
   .settings section { margin: 12px 0; }
   .settings h4 { margin: 0 0 6px; }
   .settings label { display: block; margin: 6px 0; white-space: normal; }
@@ -1833,4 +2056,4 @@ window.customCards.push({
 if (typeof window.document !== 'undefined') console.info(`%c FADE STUDIO %c ${FS_VERSION} `, 'background:#ff9f43;color:#000', 'background:#333;color:#fff');
 
 // Für Tests in Node
-if (typeof module !== 'undefined') module.exports = { playTracks, buildScript, compileTrack, normalizeKfs, stateAt, genDrift, genBreathe, genAccent, genRipple, buildAutomation };
+if (typeof module !== 'undefined') module.exports = { playTracks, buildScript, compileTrack, normalizeKfs, stateAt, TEMPLATES, buildAutomation, rgbToXy };
