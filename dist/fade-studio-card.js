@@ -5,12 +5,12 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.4.0';
+const FS_VERSION = '0.5.0';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
 const AUTO_ID = 'fade_studio_autostop';
-const DEFAULT_SETTINGS = { ikea_mode: 'split', stop_away: true, away_action: 'off', stop_external_off: true };
+const DEFAULT_SETTINGS = { ikea_mode: 'split', stop_away: true, away_action: 'off', stop_external_off: true, off_action: 'all' };
 
 /* ------------------------------------------------------------------ */
 /* Hilfsfunktionen                                                     */
@@ -125,11 +125,13 @@ function lightInfo(hass, eid) {
   const areaId = ent?.area_id || dev?.area_id;
   const area = areaId ? hass.areas?.[areaId]?.name : undefined;
   const isGroup = !!a.is_hue_group || Array.isArray(a.entity_id);
+  const members = Array.isArray(a.entity_id) ? a.entity_id.filter((e) => e.startsWith('light.') && e !== eid) : [];
   return {
     eid,
     name: a.friendly_name || eid,
     area: area || '',
     isGroup,
+    members,
     ct: modes.includes('color_temp'),
     color: modes.some((m) => ['hs', 'xy', 'rgb', 'rgbw', 'rgbww'].includes(m)),
     minK: a.min_color_temp_kelvin || 2000,
@@ -137,6 +139,36 @@ function lightInfo(hass, eid) {
     ikea: /ikea/i.test(dev?.manufacturer || '') || /tradfri|kajplats|ikea/i.test(dev?.model || ''),
     available: !!st && st.state !== 'unavailable',
   };
+}
+
+/** Modus, den ein Gruppenmitglied vom Gruppen-Modus übernimmt (je nach Fähigkeiten der Lampe). */
+function memberMode(groupMode, info) {
+  if (groupMode === 'color' && !info.color) return info.ct ? 'ct' : 'bri';
+  if (groupMode === 'ct' && !info.ct && !info.color) return 'bri';
+  return groupMode;
+}
+
+/**
+ * Spuren, wie sie abgespielt werden: Eine Gruppe ohne eigene Mitglieder-Spuren geht als ein Befehl an die
+ * Gruppe (synchron, wenig Funkverkehr). Hat ein Mitglied eine eigene Spur, wird die Gruppe in ihre Lampen
+ * aufgelöst – die übrigen Mitglieder folgen der Gruppenspur.
+ */
+function playTracks(hass, show) {
+  const out = [];
+  for (const tr of show.tracks) {
+    if (!tr.entity) continue;
+    const ov = tr.members || {};
+    const ids = hass ? lightInfo(hass, tr.entity).members : tr.memberIds || [];
+    if (!Object.keys(ov).length || !ids.length) {
+      out.push(tr);
+      continue;
+    }
+    for (const m of ids) {
+      if (ov[m]) out.push({ ...ov[m], entity: m });
+      else out.push({ entity: m, mode: hass ? memberMode(tr.mode, lightInfo(hass, m)) : tr.mode, split: tr.split, kfs: tr.kfs });
+    }
+  }
+  return out;
 }
 
 /**
@@ -236,6 +268,11 @@ function reactiveWait(entity, mode, part, dimmer, ti, o = {}) {
               {
                 if: tpl(`{{ ${cur}.b > 0 and is_state('${entity}', 'off') and as_timestamp(now()) < ${end} - 0.3 }}`),
                 then: [
+                  // Die Auto-Stopp-Automation beendet den Ablauf und schaltet danach die Lampen aus.
+                  // (Erst beenden, dann ausschalten – sonst kann ein letzter Befehl eine Lampe wieder einschalten.)
+                  { event: 'fade_studio_stop', event_data: { script: o.scriptEid, entity } },
+                  { delay: 5 },
+                  // Rückfall, falls die Automation fehlt oder deaktiviert ist:
                   {
                     if: tpl(`{{ state_attr('${o.snap}', 'entity_id') is not none }}`),
                     then: [{ action: 'scene.delete', target: { entity_id: o.snap }, continue_on_error: true }],
@@ -363,12 +400,12 @@ function endActions(show, snap, lights) {
   }
 }
 
-function buildScript(show, settings = DEFAULT_SETTINGS) {
+function buildScript(show, settings = DEFAULT_SETTINGS, play = null) {
   const id = show.id;
   const dimmer = `input_number.${id}_dimmer`;
   const snapId = `${id}${SNAP_SUFFIX}`;
   const snap = `scene.${snapId}`;
-  const tracks = show.tracks.filter((t) => t.entity);
+  const tracks = (play || show.tracks).filter((t) => t.entity);
   const lights = [...new Set(tracks.map((t) => t.entity))];
   const seq = [
     {
@@ -390,13 +427,13 @@ function buildScript(show, settings = DEFAULT_SETTINGS) {
     alias: `Fade Studio: ${show.name}`,
     description:
       'Erstellt mit der Fade-Studio-Karte – bitte dort bearbeiten. ' +
-      'Starten: script.turn_on. Sanft finish: script.turn_on mit variables: {finish: true}.',
+      'Starten: script.turn_on. Sanft beenden: script.turn_on mit variables: {finish: true}.',
     icon: show.icon || 'mdi:transition',
     mode: 'restart',
     fields: {
       finish: {
         name: 'Sanft beenden',
-        description: 'An = laufenden Ablauf mit dem eingestellten Ende-Verhalten finish.',
+        description: 'An = laufenden Ablauf mit dem eingestellten Ende-Verhalten beenden.',
         selector: { boolean: {} },
         default: false,
       },
@@ -418,6 +455,7 @@ function buildAutomation(settings, shows) {
   const st = { ...DEFAULT_SETTINGS, ...settings };
   const triggers = [];
   if (st.stop_away) triggers.push({ trigger: 'state', entity_id: 'zone.home', to: '0', id: 'away' });
+  triggers.push({ trigger: 'event', event_type: 'fade_studio_stop', id: 'ext_off' });
   // Hart gestoppte Abläufe (z. B. im Skript-Editor) hinterlassen ihren Schnappschuss – aufräumen.
   if (Object.keys(shows).length)
     triggers.push({ trigger: 'state', entity_id: Object.keys(shows).sort(), from: 'on', to: 'off', id: 'ended', for: { seconds: 10 } });
@@ -440,6 +478,26 @@ function buildAutomation(settings, shows) {
     actions: [
       {
         choose: [
+          {
+            conditions: tpl("{{ trigger.id == 'ext_off' and trigger.event.data.script in shows }}"),
+            sequence: [
+              { variables: { sc: '{{ trigger.event.data.script }}', snap: `{{ 'scene.' ~ trigger.event.data.script.split('.')[1] ~ '${SNAP_SUFFIX}' }}` } },
+              { action: 'script.turn_off', target: { entity_id: '{{ sc }}' } },
+              {
+                if: tpl("{{ fade_studio_settings.off_action != 'keep' }}"),
+                then: [
+                  { action: 'light.turn_off', target: { entity_id: '{{ shows[sc] }}' } },
+                  { delay: 2 },
+                  // Lampen, die spät melden oder noch einen letzten Befehl bekommen haben, nochmals ausschalten
+                  {
+                    if: tpl("{{ shows[sc] | select('is_state', 'on') | list | count > 0 }}"),
+                    then: [{ action: 'light.turn_off', target: { entity_id: "{{ shows[sc] | select('is_state', 'on') | list }}" } }],
+                  },
+                ],
+              },
+              delSnapTop,
+            ],
+          },
           {
             conditions: tpl("{{ trigger.id == 'ended' }}"),
             sequence: [
@@ -840,7 +898,8 @@ class FadeStudioCard extends HTMLElement {
     for (const eid of this._showIds()) {
       try {
         const cfg = await this._hass.callApi('GET', `config/script/config/${eid.replace('script.', '')}`);
-        shows[eid] = [...new Set((cfg?.variables?.fade_studio?.show?.tracks || []).map((t) => t.entity).filter(Boolean))];
+        const sh = cfg?.variables?.fade_studio?.show;
+        if (sh) shows[eid] = [...new Set(playTracks(this._hass, sh).map((t) => t.entity).filter(Boolean))];
       } catch (e) {
         /* übersprungen */
       }
@@ -860,7 +919,10 @@ class FadeStudioCard extends HTMLElement {
         const id = eid.replace('script.', '');
         const cfg = await this._hass.callApi('GET', `config/script/config/${id}`);
         const show = cfg?.variables?.fade_studio?.show;
-        if (show) await this._hass.callApi('POST', `config/script/config/${id}`, buildScript({ ...show, id }, SESSION.settings));
+        if (show) {
+          const sh = { ...show, id };
+          await this._hass.callApi('POST', `config/script/config/${id}`, buildScript(sh, SESSION.settings, playTracks(this._hass, sh)));
+        }
       }
       await this._syncAutomation();
       this._setMsg('Einstellungen gespeichert.');
@@ -911,7 +973,11 @@ class FadeStudioCard extends HTMLElement {
         });
         await this._addLabel(dimmer, labelId, { name: `${s.name} – Helligkeit` });
       }
-      await this._hass.callApi('POST', `config/script/config/${s.id}`, buildScript(s, this._settings));
+      for (const t of s.tracks) {
+        const ids = lightInfo(this._hass, t.entity).members;
+        if (ids.length) t.memberIds = ids;
+      }
+      await this._hass.callApi('POST', `config/script/config/${s.id}`, buildScript(s, this._settings, playTracks(this._hass, s)));
       await this._addLabel(`script.${s.id}`, labelId);
       for (let i = 0; i < 20 && !this._hass.states[`script.${s.id}`]; i++) await new Promise((r) => setTimeout(r, 300));
       await this._syncAutomation(labelId);
@@ -1003,8 +1069,30 @@ class FadeStudioCard extends HTMLElement {
     if (this._hass.states[d]) this._hass.callService('input_number', 'set_value', { entity_id: d, value: Number(v) });
   }
 
-  _previewKf(ti, ki) {
+  /** Spur-Objekt: Hauptspur oder eigene Spur eines Gruppenmitglieds (null = folgt der Gruppe). */
+  _ref(ti, m) {
     const tr = this._show.tracks[ti];
+    if (!tr) return null;
+    return m ? tr.members?.[m] || null : tr;
+  }
+
+  /** Eigene Spur für ein Gruppenmitglied anlegen – als Kopie der Gruppenspur. */
+  _makeOverride(ti, m) {
+    const tr = this._show.tracks[ti];
+    const info = lightInfo(this._hass, m);
+    const mode = memberMode(tr.mode, info);
+    tr.members = tr.members || {};
+    tr.members[m] = {
+      entity: m,
+      mode,
+      split: info.ikea && mode !== 'bri' ? this._ikeaMode() === 'split' : !!tr.split,
+      kfs: tr.kfs.map((k) => ({ ...k, k: clamp(k.k, info.minK, info.maxK) })),
+    };
+    return tr.members[m];
+  }
+
+  _previewKf(ti, ki, m) {
+    const tr = this._ref(ti, m);
     const kf = tr?.kfs[ki];
     if (!kf) return;
     if (kf.b <= 0) return this._hass.callService('light', 'turn_off', { entity_id: tr.entity, transition: 1.5 });
@@ -1080,7 +1168,7 @@ class FadeStudioCard extends HTMLElement {
     const lights = this._lights();
     const scenes = Object.keys(h.states).filter((e) => e.startsWith('scene.') && !e.endsWith(SNAP_SUFFIX));
     const dimmer = s.id ? h.states[`input_number.${s.id}_dimmer`] : null;
-    const sel = this._sel && s.tracks[this._sel.ti]?.kfs[this._sel.ki] ? this._sel : null;
+    const sel = this._sel && this._ref(this._sel.ti, this._sel.m)?.kfs[this._sel.ki] ? this._sel : null;
     const lightOpts = (selected) =>
       lights
         .map(
@@ -1148,27 +1236,7 @@ class FadeStudioCard extends HTMLElement {
         <div class="timeline">
           <div id="ph" class="phline"><span id="phT" class="phtime"></span></div>
           <div class="row ruler"><div class="lab"></div><div class="lane rulerlane">${this._rulerHtml()}</div></div>
-          ${s.tracks
-            .map((tr, ti) => {
-              const info = lightInfo(h, tr.entity);
-              const modes = [
-                info.ct || info.color ? ['ct', 'Weißton'] : null,
-                info.color ? ['color', 'Farbe'] : null,
-                ['bri', 'nur Helligkeit'],
-              ].filter(Boolean);
-              return `<div class="row" data-ti="${ti}">
-                <div class="lab">
-                  <div class="lname" title="${esc(tr.entity)}">${info.available ? '' : '⚠ '}${esc(info.name)}${info.ikea ? ' <span class="badge" title="Als IKEA-Lampe erkannt">IKEA</span>' : ''}</div>
-                  <div class="lctl">
-                    <select data-mode="${ti}">${modes.map(([v, t]) => `<option value="${v}" ${tr.mode === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
-                    ${tr.mode !== 'bri' ? `<label class="chk small" title="Pro Abschnitt erst den Ton, dann die Helligkeit überblenden. Hilft bei Lampen (oft IKEA), die beides nicht gleichzeitig können."><input type="checkbox" data-split="${ti}" ${tr.split ? 'checked' : ''}>nacheinander</label>` : ''}
-                    <button class="icon" data-deltrack="${ti}" title="Spur entfernen">✕</button>
-                  </div>
-                </div>
-                <div class="lane" data-lane="${ti}"></div>
-              </div>`;
-            })
-            .join('')}
+          ${s.tracks.map((tr, ti) => this._trackRowsHtml(tr, ti)).join('')}
           ${s.tracks.length ? '' : `<div class="empty">Noch keine Spuren. Füge unten eine Lampe hinzu – oder starte oben mit einer Vorlage.</div>`}
           <div class="row add">
             <div class="lab"><select id="addSel">${lightOpts('')}</select></div>
@@ -1196,6 +1264,54 @@ class FadeStudioCard extends HTMLElement {
     requestAnimationFrame(() => this._renderLanes());
   }
 
+  _trackRowsHtml(tr, ti) {
+    const h = this._hass;
+    const info = lightInfo(h, tr.entity);
+    const modeSel = (ref, inf, m) => {
+      const modes = [
+        inf.ct || inf.color ? ['ct', 'Weißton'] : null,
+        inf.color ? ['color', 'Farbe'] : null,
+        ['bri', 'nur Helligkeit'],
+      ].filter(Boolean);
+      const md = m ? ` data-member="${m}"` : '';
+      return `<select data-mode="${ti}"${md}>${modes.map(([v, t]) => `<option value="${v}" ${ref.mode === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        ${ref.mode !== 'bri' ? `<label class="chk small" title="Pro Abschnitt erst den Ton, dann die Helligkeit überblenden. Hilft bei Lampen (oft IKEA), die beides nicht gleichzeitig können."><input type="checkbox" data-split="${ti}"${md} ${ref.split ? 'checked' : ''}>nacheinander</label>` : ''}`;
+    };
+    const badge = (inf) => (inf.ikea ? ' <span class="badge" title="Als IKEA-Lampe erkannt">IKEA</span>' : '');
+    const members = info.members;
+    const isGroup = members.length > 0;
+    const own = Object.keys(tr.members || {}).filter((m) => members.includes(m));
+    let out = `<div class="row" data-ti="${ti}">
+      <div class="lab">
+        <div class="lname" title="${esc(tr.entity)}">
+          ${isGroup ? `<button class="icon fold" data-expand="${ti}" title="${tr.expanded ? 'Einzelne Lampen ausblenden' : 'Einzelne Lampen zeigen'}">${tr.expanded ? '▾' : '▸'}</button>` : ''}
+          ${info.available ? '' : '⚠ '}${esc(info.name)}${badge(info)}
+        </div>
+        ${isGroup ? `<div class="small hint">Gruppe · ${members.length} Lampen${own.length ? ` · ${own.length} mit eigener Spur` : ''}</div>` : ''}
+        <div class="lctl">${modeSel(tr, info)}<button class="icon" data-deltrack="${ti}" title="Spur entfernen">✕</button></div>
+      </div>
+      <div class="lane" data-lane="${ti}"></div>
+    </div>`;
+    if (isGroup && tr.expanded) {
+      for (const m of members) {
+        const mi = lightInfo(h, m);
+        const ov = tr.members?.[m];
+        out += `<div class="row member">
+          <div class="lab">
+            <div class="lname" title="${esc(m)}">${mi.available ? '' : '⚠ '}${esc(mi.name)}${badge(mi)}</div>
+            <div class="lctl">${
+              ov
+                ? `${modeSel(ov, mi, m)}<button class="icon" data-reset="${ti}" data-member="${m}" title="Eigene Spur verwerfen – Lampe folgt wieder der Gruppe">↺</button>`
+                : `<span class="small hint">folgt der Gruppe · in die Spur klicken für eine eigene</span>`
+            }</div>
+          </div>
+          <div class="lane ${ov ? '' : 'ghost'}" data-lane="${ti}" data-member="${m}"></div>
+        </div>`;
+      }
+    }
+    return out;
+  }
+
   _rulerHtml() {
     const L = this._show.length;
     const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
@@ -1206,8 +1322,8 @@ class FadeStudioCard extends HTMLElement {
     return out;
   }
 
-  _kfEditorHtml({ ti, ki }) {
-    const tr = this._show.tracks[ti];
+  _kfEditorHtml({ ti, ki, m }) {
+    const tr = this._ref(ti, m);
     const kf = tr.kfs[ki];
     const info = lightInfo(this._hass, tr.entity);
     return `<div class="kfedit">
@@ -1284,7 +1400,13 @@ class FadeStudioCard extends HTMLElement {
             <option value="keep" ${st.away_action === 'keep' ? 'selected' : ''}>Lampen so lassen, wie sie gerade sind</option>
           </select>
         </label>
-        <label class="chk wrap"><input type="checkbox" id="stOff" ${st.stop_external_off ? 'checked' : ''}> Wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird – per Schalter, App, Sprachbefehl oder „Alles aus". Der Ablauf stoppt, die Lampen bleiben aus.</label>
+        <label class="chk wrap"><input type="checkbox" id="stOff" ${st.stop_external_off ? 'checked' : ''}> Wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird – per Schalter, App, Sprachbefehl oder „Alles aus"</label>
+        <label class="indent">danach:
+          <select id="stOffAction">
+            <option value="all" ${st.off_action !== 'keep' ? 'selected' : ''}>alle Lampen des Ablaufs ausschalten</option>
+            <option value="keep" ${st.off_action === 'keep' ? 'selected' : ''}>nur die ausgeschalteten bleiben aus, die übrigen bleiben wie sie sind</option>
+          </select>
+        </label>
         <p class="hint">„Niemand zu Hause" läuft über die Automation „Fade Studio: Auto-Stopp" (Einstellungen → Automationen)${autoExists ? '' : ', die beim Speichern angelegt wird'}. Dafür müssen Personen mit Standort eingerichtet sein, z. B. über die Companion-App. Das Erkennen von fremdem Ausschalten steckt direkt in jedem Ablauf.</p>
       </section>
 
@@ -1307,12 +1429,16 @@ class FadeStudioCard extends HTMLElement {
     const s = this._show;
     if (!s) return;
     const lanes = this.shadowRoot.querySelectorAll('.lane[data-lane]');
-    lanes.forEach((lane) => {
+    lanes.forEach((lane, li) => {
       const ti = Number(lane.dataset.lane);
-      const tr = s.tracks[ti];
+      const m = lane.dataset.member;
+      let tr = this._ref(ti, m);
+      const ghost = !!m && !tr;
+      if (ghost) tr = { mode: memberMode(s.tracks[ti].mode, lightInfo(this._hass, m)), kfs: s.tracks[ti].kfs };
+      if (!tr) return;
       const W = lane.clientWidth;
       if (!W) return;
-      const H = LANE_H;
+      const H = lane.clientHeight || LANE_H;
       const L = s.length;
       const x = (t) => (t / L) * W;
       const y = (b) => H - 6 - (b / 100) * (H - 12);
@@ -1325,18 +1451,18 @@ class FadeStudioCard extends HTMLElement {
       const poly = pts.map((p) => `${x(p.t).toFixed(1)},${y(p.b).toFixed(1)}`).join(' ');
       // Nur die Fläche unterhalb der Helligkeitskurve zeigt den Lichtton (wie eine Hüllkurve).
       const fill = `0,${H} ${poly} ${W},${H}`;
-      const circles = tr.kfs
+      const circles = (ghost ? [] : tr.kfs)
         .map((kf, ki) => {
-          const selected = this._sel && this._sel.ti === ti && this._sel.ki === ki;
+          const selected = this._sel && this._sel.ti === ti && this._sel.ki === ki && (this._sel.m || undefined) === m;
           return `<circle class="kf ${selected ? 'sel' : ''}" data-ki="${ki}" cx="${x(kf.t)}" cy="${y(kf.b)}" r="${selected ? 9 : 7}" fill="${rgbToHex(toneRgb(kf, tr.mode))}"/>`;
         })
         .join('');
       lane.innerHTML = `<svg width="${W}" height="${H}">
-        <defs><linearGradient id="g${ti}">${stops}</linearGradient></defs>
-        <clipPath id="c${ti}"><rect x="0" y="0" width="${W}" height="${H}" rx="6"/></clipPath>
-        <g clip-path="url(#c${ti})">
+        <defs><linearGradient id="g${li}">${stops}</linearGradient></defs>
+        <clipPath id="c${li}"><rect x="0" y="0" width="${W}" height="${H}" rx="6"/></clipPath>
+        <g clip-path="url(#c${li})">
           <rect class="bg" x="0" y="0" width="${W}" height="${H}"/>
-          <polygon points="${fill}" fill="url(#g${ti})"/>
+          <polygon points="${fill}" fill="url(#g${li})"/>
         </g>
         <polyline points="${poly}" fill="none" stroke="rgba(0,0,0,.35)" stroke-width="3.5"/>
         <polyline points="${poly}" fill="none" stroke="#fff" stroke-width="1.5"/>
@@ -1352,7 +1478,17 @@ class FadeStudioCard extends HTMLElement {
     // Hinweis: Das SVG wird beim Ziehen laufend neu gezeichnet. Deshalb hängen die
     // Listener am Fenster und die Maße kommen vom (bleibenden) Spur-Container.
     const s = this._show;
-    const tr = s.tracks[ti];
+    const m = lane.dataset.member;
+    const tr = this._ref(ti, m);
+    if (!tr) {
+      // Mitglied folgt der Gruppe: erster Klick legt eine eigene Spur an (Kopie der Gruppenspur).
+      this._makeOverride(ti, m);
+      this._dirty = true;
+      this._msg = `${lightInfo(this._hass, m).name}: eigene Spur angelegt – jetzt einzeln bearbeitbar.`;
+      this._render();
+      ev.preventDefault();
+      return;
+    }
     const rect = lane.getBoundingClientRect();
     const W = rect.width;
     const toT = (cx) => clamp(Math.round((((cx - rect.left) / W) * s.length) * 2) / 2, 0, s.length);
@@ -1367,7 +1503,7 @@ class FadeStudioCard extends HTMLElement {
       ki = tr.kfs.length - 1;
       this._dirty = true;
     }
-    this._sel = { ti, ki };
+    this._sel = { ti, ki, m };
     const startX = ev.clientX;
     const startY = ev.clientY;
     let moved = false;
@@ -1395,7 +1531,7 @@ class FadeStudioCard extends HTMLElement {
 
   _syncKfEditor() {
     if (!this._sel) return;
-    const kf = this._show.tracks[this._sel.ti]?.kfs[this._sel.ki];
+    const kf = this._ref(this._sel.ti, this._sel.m)?.kfs[this._sel.ki];
     const r = this.shadowRoot;
     if (!kf || !r.querySelector('#kfT')) return;
     r.querySelector('#kfT').value = r1(kf.t);
@@ -1452,6 +1588,7 @@ class FadeStudioCard extends HTMLElement {
           stop_away: g('#stAway').checked,
           away_action: g('#stAwayAction').value,
           stop_external_off: g('#stOff').checked,
+          off_action: g('#stOffAction').value,
         });
         SESSION.settingsOpen = false;
         this._render();
@@ -1477,13 +1614,29 @@ class FadeStudioCard extends HTMLElement {
     });
     r.querySelectorAll('[data-mode]').forEach((el) =>
       el.addEventListener('change', (e) => {
-        s.tracks[Number(el.dataset.mode)].mode = e.target.value;
+        this._ref(Number(el.dataset.mode), el.dataset.member).mode = e.target.value;
         this._dirty = true;
         this._render();
       })
     );
     r.querySelectorAll('[data-split]').forEach((el) =>
-      el.addEventListener('change', (e) => ((s.tracks[Number(el.dataset.split)].split = e.target.checked), this._markDirty()))
+      el.addEventListener('change', (e) => ((this._ref(Number(el.dataset.split), el.dataset.member).split = e.target.checked), this._markDirty()))
+    );
+    r.querySelectorAll('[data-expand]').forEach((el) =>
+      el.addEventListener('click', () => {
+        const tr = s.tracks[Number(el.dataset.expand)];
+        tr.expanded = !tr.expanded;
+        this._render();
+      })
+    );
+    r.querySelectorAll('[data-reset]').forEach((el) =>
+      el.addEventListener('click', () => {
+        const tr = s.tracks[Number(el.dataset.reset)];
+        delete tr.members[el.dataset.member];
+        if (this._sel?.m === el.dataset.member) this._sel = null;
+        this._dirty = true;
+        this._render();
+      })
     );
     r.querySelectorAll('[data-deltrack]').forEach((el) =>
       el.addEventListener('click', () => {
@@ -1496,8 +1649,8 @@ class FadeStudioCard extends HTMLElement {
 
     // Punkt-Editor
     if (this._sel) {
-      const { ti, ki } = this._sel;
-      const tr = s.tracks[ti];
+      const { ti, ki, m } = this._sel;
+      const tr = this._ref(ti, m);
       const kf = tr?.kfs[ki];
       if (kf) {
         const live = () => (this._markDirty(), this._renderLanes());
@@ -1514,7 +1667,7 @@ class FadeStudioCard extends HTMLElement {
           live();
         });
         on('#kfC', 'input', (e) => ((kf.c = e.target.value), live()));
-        on('#kfPreview', 'click', () => this._previewKf(ti, ki));
+        on('#kfPreview', 'click', () => this._previewKf(ti, ki, m));
         on('#kfAll', 'click', () => {
           s.tracks.forEach((t, i) => {
             if (i === ti) return;
@@ -1639,6 +1792,11 @@ const STYLE = `
   .settings .indent { margin-left: 26px; }
   .dangerzone { border: 1px solid var(--error-color, #db4437); border-radius: 8px; padding: 10px 12px; }
   .dangerzone h4 { color: var(--error-color, #db4437); }
+  .row.member .lab { padding-left: 14px; border-left: 2px solid var(--divider-color, #ccc); }
+  .row.member .lctl { flex-wrap: wrap; }
+  .row.member .lane { height: ${LANE_H - 16}px; }
+  .lane.ghost svg { opacity: .4; cursor: copy; }
+  .fold { padding: 0 4px 0 0; font-size: 1em; }
   .badge { font-size: .68em; font-weight: 600; padding: 1px 5px; border-radius: 4px; vertical-align: middle;
     background: var(--secondary-background-color, #eee); color: var(--secondary-text-color); border: 1px solid var(--divider-color, #ccc); }
   .empty { padding: 18px; text-align: center; color: var(--secondary-text-color); border: 1px dashed var(--divider-color, #ccc); border-radius: 8px; }
@@ -1675,4 +1833,4 @@ window.customCards.push({
 if (typeof window.document !== 'undefined') console.info(`%c FADE STUDIO %c ${FS_VERSION} `, 'background:#ff9f43;color:#000', 'background:#333;color:#fff');
 
 // Für Tests in Node
-if (typeof module !== 'undefined') module.exports = { buildScript, compileTrack, normalizeKfs, stateAt, genDrift, genBreathe, genAccent, genRipple, buildAutomation };
+if (typeof module !== 'undefined') module.exports = { playTracks, buildScript, compileTrack, normalizeKfs, stateAt, genDrift, genBreathe, genAccent, genRipple, buildAutomation };

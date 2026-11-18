@@ -21,6 +21,7 @@ Abgespielt wird ausschließlich von Home Assistant selbst. Jeder Abschnitt der Z
 ## Funktionen
 
 - Spuren pro Lampe oder Gruppe, Punkte per Klick setzen und ziehen (Zeit ↔ Helligkeit)
+- **Gruppen** (Hue-Räume/-Zonen, Lichtgruppen) erscheinen als eine Spur und lassen sich mit ▸ aufklappen. Jede Lampe der Gruppe kann per Klick eine eigene Spur bekommen (↺ = wieder der Gruppe folgen). Ohne eigene Spuren geht ein einziger Befehl an die Gruppe, synchron und mit wenig Funkverkehr.
 - Modi pro Spur: **Weißton** (Kelvin), **Farbe**, **nur Helligkeit** – automatisch passend zur Lampe
 - **IKEA-Lampen werden automatisch erkannt** (Hersteller bzw. Modell, auch über Hue Bridge und Matter), mit „IKEA“ markiert und standardmäßig „nacheinander“ überblendet: erst der Ton, dann die Helligkeit
 - Endlosschleife (nahtlos), Einblenden, Ende-Verhalten: vorherigen Zustand wiederherstellen, halten, ausblenden, Szene
@@ -32,7 +33,7 @@ Abgespielt wird ausschließlich von Home Assistant selbst. Jeder Abschnitt der Z
   - **✦ Color Accent** – pro Raum eine Farblampe mit zügigen, kontrastreichen Farbwechseln; die übrigen Lampen bleiben ruhig in gedimmtem Warmweiß
   - **〰 Ripple** – ein heller Impuls wandert flott von Lampe zu Lampe, starker Hell-Dunkel-Kontrast
 - **Automatisch stoppen** (⚙ Einstellungen):
-  - wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird (Schalter, App, Sprachbefehl, „Alles aus“) – der Ablauf erkennt das selbst
+  - wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird (Schalter, App, Sprachbefehl, „Alles aus“) – der Ablauf erkennt das selbst. Danach wahlweise alle Lampen des Ablaufs ausschalten (Standard, mit Nachkontrolle nach 2 s) oder nur die ausgeschalteten aus lassen
   - wenn niemand mehr zu Hause ist (`zone.home` wird 0) – danach wahlweise ausschalten, vorherigen Zustand wiederherstellen oder so lassen
 - **Alles entfernen** (in den Einstellungen): stoppt laufende Abläufe, stellt den Zustand vor dem Start wieder her und löscht alles, was Fade Studio angelegt hat
 
