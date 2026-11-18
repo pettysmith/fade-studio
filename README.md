@@ -12,6 +12,8 @@ Fade Studio ist **nur ein Editor** (eine Dashboard-Karte). Beim Speichern entste
 |---|---|
 | `script.fade_studio_<name>` | spielt den Ablauf ab (die Zeitleiste steckt als `variables` im Skript) |
 | `input_number.fade_studio_<name>_dimmer` | Gesamthelligkeit des Ablaufs – alle Lampen im Verhältnis |
+| `automation` „Fade Studio: Auto-Stopp“ | stoppt bei Abwesenheit, räumt Schnappschüsse auf, speichert die Einstellungen |
+| `scene.fade_studio_<name>_before` | Zustand vor dem Start (nur während ein Ablauf läuft) |
 | Label **Fade Studio** | markiert alles, was die Karte erzeugt hat |
 
 Abgespielt wird ausschließlich von Home Assistant selbst. Jeder Abschnitt der Zeitleiste ist **ein** `light.turn_on` mit `transition` – die Lampe (Hue, Zigbee, Matter) überblendet selbst. Das ist weich und belastet das Funknetz kaum.
@@ -20,13 +22,19 @@ Abgespielt wird ausschließlich von Home Assistant selbst. Jeder Abschnitt der Z
 
 - Spuren pro Lampe oder Gruppe, Punkte per Klick setzen und ziehen (Zeit ↔ Helligkeit)
 - Modi pro Spur: **Weißton** (Kelvin), **Farbe**, **nur Helligkeit** – automatisch passend zur Lampe
-- **IKEA-Lampen werden automatisch erkannt** (Hersteller bzw. Modell, auch über Hue Bridge und Matter) und standardmäßig „nacheinander“ überblendet: erst der Ton, dann die Helligkeit. Pro Spur abschaltbar.
-- Durchgehender **Abspiel-Strich** mit Zeitanzeige, während ein Ablauf läuft
+- **IKEA-Lampen werden automatisch erkannt** (Hersteller bzw. Modell, auch über Hue Bridge und Matter), mit „IKEA“ markiert und standardmäßig „nacheinander“ überblendet: erst der Ton, dann die Helligkeit
 - Endlosschleife (nahtlos), Einblenden, Ende-Verhalten: vorherigen Zustand wiederherstellen, halten, ausblenden, Szene
 - Gesamthelligkeit live regelbar – ohne Sprung (Restzeit wird neu berechnet)
-- Vorlagen **☁ Ambient Drift** (ruhiges, zeitversetztes Gleiten) und **≈ Breathe** (sanftes Pulsieren, als Welle durch die Räume)
-- „An Lampe zeigen“ für einzelne Punkte
-- **Alles entfernen**: löscht alle Skripte, Helfer und das Label
+- Durchgehender **Abspiel-Strich** mit Zeitanzeige
+- Vorlagen:
+  - **☁ Ambient Drift** – ruhiges, zeitversetztes Gleiten zwischen hell/kühler und dunkel/wärmer (Standard 90 s)
+  - **≈ Breathe** – sanftes Heller und Dunkler, als Welle durch die Räume
+  - **✦ Color Accent** – pro Raum eine Farblampe mit zügigen, kontrastreichen Farbwechseln; die übrigen Lampen bleiben ruhig in gedimmtem Warmweiß
+  - **〰 Ripple** – ein heller Impuls wandert flott von Lampe zu Lampe, starker Hell-Dunkel-Kontrast
+- **Automatisch stoppen** (⚙ Einstellungen):
+  - wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird (Schalter, App, Sprachbefehl, „Alles aus“) – der Ablauf erkennt das selbst
+  - wenn niemand mehr zu Hause ist (`zone.home` wird 0) – danach wahlweise ausschalten, vorherigen Zustand wiederherstellen oder so lassen
+- **Alles entfernen** (in den Einstellungen): stoppt laufende Abläufe, stellt den Zustand vor dem Start wieder her und löscht alles, was Fade Studio angelegt hat
 
 ## Installation
 
@@ -49,16 +57,7 @@ Speichern erfordert Administratorrechte.
 
 ### Einstellungen
 
-Im Dashboard-Editor (Karte bearbeiten) oder per YAML:
-
-```yaml
-type: custom:fade-studio-card
-ikea_mode: split   # split (Standard): erst Ton, dann Helligkeit
-                   # together: gleichzeitig wie andere Lampen
-                   # brightness: nur Helligkeit, Ton bleibt unverändert
-```
-
-Die Einstellung gilt für neu angelegte Spuren und Vorlagen.
+Über das Zahnrad ⚙ oben rechts in der Karte: Umgang mit IKEA-Lampen, automatisches Stoppen und „Alles entfernen“.
 
 ## Abläufe verwenden
 
@@ -88,7 +87,7 @@ data:
 
 ## Entfernen
 
-1. In der Karte **Alles entfernen**
+1. In der Karte ⚙ → **Alles entfernen** – laufende Abläufe stoppen, die Lampen gehen auf den Stand vor dem Start zurück, danach wird alles gelöscht
 2. Karte in HACS deinstallieren (bzw. Ressource und Datei löschen), Dashboard löschen
 
 Danach bleibt nichts zurück.

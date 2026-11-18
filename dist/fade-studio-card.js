@@ -5,10 +5,12 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.3.0';
+const FS_VERSION = '0.4.0';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
+const AUTO_ID = 'fade_studio_autostop';
+const DEFAULT_SETTINGS = { ikea_mode: 'split', stop_away: true, away_action: 'off', stop_external_off: true };
 
 /* ------------------------------------------------------------------ */
 /* Hilfsfunktionen                                                     */
@@ -212,7 +214,7 @@ function lightData(mode, part, dimmer, ti) {
 }
 
 /** Wartet bis zum Abschnittsende; ändert sich der Dimmer, wird das Ziel mit der Restzeit neu gesendet (kein Sprung). */
-function reactiveWait(entity, mode, part, dimmer, ti) {
+function reactiveWait(entity, mode, part, dimmer, ti, o = {}) {
   const end = V('seg_end', ti);
   const dim = V('dim', ti);
   const cur = V('cur', ti);
@@ -220,10 +222,29 @@ function reactiveWait(entity, mode, part, dimmer, ti) {
     repeat: {
       sequence: [
         {
-          wait_for_trigger: [{ trigger: 'state', entity_id: dimmer }],
+          wait_for_trigger: [
+            { trigger: 'state', entity_id: dimmer },
+            ...(o.stopOnOff ? [{ trigger: 'state', entity_id: entity, to: 'off' }] : []),
+          ],
           timeout: `{{ [0, ${end} - as_timestamp(now())] | max }}`,
           continue_on_timeout: true,
         },
+        // Lampe ging aus, obwohl sie laut Zeitleiste gerade leuchten soll -> jemand hat sie von außen
+        // ausgeschaltet (Schalter, App, Sprachbefehl, „Alles aus"). Dann den ganzen Ablauf beenden.
+        ...(o.stopOnOff
+          ? [
+              {
+                if: tpl(`{{ ${cur}.b > 0 and is_state('${entity}', 'off') and as_timestamp(now()) < ${end} - 0.3 }}`),
+                then: [
+                  {
+                    if: tpl(`{{ state_attr('${o.snap}', 'entity_id') is not none }}`),
+                    then: [{ action: 'scene.delete', target: { entity_id: o.snap }, continue_on_error: true }],
+                  },
+                  { action: 'script.turn_off', target: { entity_id: o.scriptEid } },
+                ],
+              },
+            ]
+          : []),
         {
           if: tpl(
             `{{ (states('${dimmer}') | float(100)) != (${dim} | float(100)) and ${cur}.b > 0 and (${end} - as_timestamp(now())) > 0.5 }}`
@@ -244,7 +265,7 @@ function reactiveWait(entity, mode, part, dimmer, ti) {
 }
 
 /** Ein Abschnitt: von jetzt an in `dur` Sekunden nach `cur` überblenden. */
-function segmentActions(entity, mode, split, dimmer, ti) {
+function segmentActions(entity, mode, split, dimmer, ti, o) {
   const [cur, dur, end, half, dim] = ['cur', 'dur', 'seg_end', 'half', 'dim'].map((n) => V(n, ti));
   const target = { entity_id: entity };
   const memDim = { [dim]: `{{ states('${dimmer}') | float(100) }}` };
@@ -256,7 +277,7 @@ function segmentActions(entity, mode, split, dimmer, ti) {
         then: [{ action: 'light.turn_off', target, data: { transition: `{{ ${dur} }}` } }],
         else: [{ action: 'light.turn_on', target, data: { ...lightData(mode, 'all', dimmer, ti), transition: `{{ ${dur} }}` } }],
       },
-      reactiveWait(entity, mode, 'all', dimmer, ti),
+      reactiveWait(entity, mode, 'all', dimmer, ti, o),
     ];
   }
   // IKEA-Modus: erste Hälfte nur Farbe/Weißton, zweite Hälfte nur Helligkeit.
@@ -281,14 +302,14 @@ function segmentActions(entity, mode, split, dimmer, ti) {
       ],
       default: [{ action: 'light.turn_on', target, data: { ...lightData(mode, 'bri', dimmer, ti), transition: `{{ ${half} }}` } }],
     },
-    reactiveWait(entity, mode, 'bri', dimmer, ti),
+    reactiveWait(entity, mode, 'bri', dimmer, ti, o),
   ];
 }
 
-function trackBranch(show, tr, dimmer, ti) {
+function trackBranch(show, tr, dimmer, ti, o) {
   const [trv, cur, dur] = ['tr', 'cur', 'dur'].map((n) => V(n, ti));
   const c = compileTrack(show, tr);
-  const seg = segmentActions(tr.entity, tr.mode, !!tr.split, dimmer, ti);
+  const seg = segmentActions(tr.entity, tr.mode, !!tr.split, dimmer, ti, o);
   const preOnData = { brightness_pct: 1, transition: 0 };
   if (tr.mode === 'ct') preOnData.color_temp_kelvin = `{{ ${trv}.first.k }}`;
   if (tr.mode === 'color') preOnData.rgb_color = `{{ ${trv}.first.c }}`;
@@ -342,7 +363,7 @@ function endActions(show, snap, lights) {
   }
 }
 
-function buildScript(show) {
+function buildScript(show, settings = DEFAULT_SETTINGS) {
   const id = show.id;
   const dimmer = `input_number.${id}_dimmer`;
   const snapId = `${id}${SNAP_SUFFIX}`;
@@ -355,13 +376,15 @@ function buildScript(show) {
       then: [...endActions(show, snap, lights), { stop: 'Beendet' }],
     },
   ];
-  if (show.end?.mode === 'restore') {
-    seq.push({
-      if: tpl(`{{ state_attr('${snap}', 'entity_id') is none }}`),
-      then: [{ action: 'scene.create', data: { scene_id: snapId, snapshot_entities: lights } }],
-    });
-  }
-  seq.push({ parallel: tracks.map((t, ti) => trackBranch(show, t, dimmer, ti)) });
+  // Zustand vor dem Start immer merken – für „vorherigen Zustand wiederherstellen",
+  // für den Auto-Stopp und damit „Alles entfernen" sauber zurücksetzen kann.
+  // Ein vorhandener Schnappschuss bleibt (Neustart während des Laufs). Veraltete räumt die Auto-Stopp-Automation weg.
+  seq.push({
+    if: tpl(`{{ state_attr('${snap}', 'entity_id') is none }}`),
+    then: [{ action: 'scene.create', data: { scene_id: snapId, snapshot_entities: lights } }],
+  });
+  const o = { stopOnOff: settings.stop_external_off !== false, scriptEid: `script.${id}`, snap };
+  seq.push({ parallel: tracks.map((t, ti) => trackBranch(show, t, dimmer, ti, o)) });
   if (!show.loop) seq.push(...endActions(show, snap, lights));
   return {
     alias: `Fade Studio: ${show.name}`,
@@ -384,25 +407,121 @@ function buildScript(show) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Auto-Stopp: eine normale Automation, die auch die Einstellungen trägt */
+/* ------------------------------------------------------------------ */
+/**
+ * shows: { 'script.fade_studio_x': ['light.a', ...] }
+ * Stoppt laufende Abläufe, wenn niemand mehr zu Hause ist. (Fremdes Ausschalten erkennt jeder Ablauf
+ * selbst – siehe reactiveWait.) Die Automation trägt außerdem die Einstellungen von Fade Studio.
+ */
+function buildAutomation(settings, shows) {
+  const st = { ...DEFAULT_SETTINGS, ...settings };
+  const triggers = [];
+  if (st.stop_away) triggers.push({ trigger: 'state', entity_id: 'zone.home', to: '0', id: 'away' });
+  // Hart gestoppte Abläufe (z. B. im Skript-Editor) hinterlassen ihren Schnappschuss – aufräumen.
+  if (Object.keys(shows).length)
+    triggers.push({ trigger: 'state', entity_id: Object.keys(shows).sort(), from: 'on', to: 'off', id: 'ended', for: { seconds: 10 } });
+  const snapVars = { variables: { snap: `{{ 'scene.' ~ repeat.item.split('.')[1] ~ '${SNAP_SUFFIX}' }}` } };
+  const delSnap = {
+    if: tpl('{{ state_attr(snap, "entity_id") is not none }}'),
+    then: [{ action: 'scene.delete', target: { entity_id: '{{ snap }}' }, continue_on_error: true }],
+  };
+  const delSnapTop = { ...delSnap };
+  return {
+    id: AUTO_ID,
+    alias: 'Fade Studio: Auto-Stopp',
+    description:
+      'Von Fade Studio verwaltet – Einstellungen in der Fade-Studio-Karte (⚙). ' +
+      'Stoppt laufende Abläufe, wenn niemand mehr zu Hause ist, und speichert die Einstellungen von Fade Studio.',
+    mode: 'queued',
+    variables: { fade_studio_settings: st, shows },
+    triggers,
+    conditions: [],
+    actions: [
+      {
+        choose: [
+          {
+            conditions: tpl("{{ trigger.id == 'ended' }}"),
+            sequence: [
+              {
+                variables: { snap: `{{ 'scene.' ~ trigger.entity_id.split('.')[1] ~ '${SNAP_SUFFIX}' }}` },
+              },
+              delSnapTop,
+            ],
+          },
+          {
+            conditions: tpl("{{ trigger.id == 'away' }}"),
+            sequence: [
+              {
+                repeat: {
+                  for_each: "{{ shows.keys() | select('is_state', 'on') | list }}",
+                  sequence: [
+                    { action: 'script.turn_off', target: { entity_id: '{{ repeat.item }}' } },
+                    snapVars,
+                    {
+                      choose: [
+                        {
+                          conditions: tpl("{{ fade_studio_settings.away_action == 'off' }}"),
+                          sequence: [{ action: 'light.turn_off', target: { entity_id: '{{ shows[repeat.item] }}' }, data: { transition: 3 } }],
+                        },
+                        {
+                          conditions: tpl("{{ fade_studio_settings.away_action == 'restore' and state_attr(snap, 'entity_id') is not none }}"),
+                          sequence: [{ action: 'scene.turn_on', target: { entity_id: '{{ snap }}' }, data: { transition: 3 } }],
+                        },
+                      ],
+                    },
+                    delSnap,
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Vorlagen                                                            */
 /* ------------------------------------------------------------------ */
 const TINTS = ['#ffd2a8', '#ffc4b8', '#ffe2b0', '#f6d0e0', '#ffcf9e'];
+const PALETTES = {
+  sunset: { name: 'Sonnenuntergang', colors: ['#ff7a30', '#ff3d6e', '#b84dff', '#ff9a2e'] },
+  ocean: { name: 'Ozean', colors: ['#1fc8ff', '#2a5bff', '#7b4dff', '#00d9a6'] },
+  forest: { name: 'Wald', colors: ['#7dff4a', '#00c07a', '#e8ff5a', '#20d0a0'] },
+  rainbow: { name: 'Regenbogen', colors: ['#ff2a2a', '#ff9a00', '#ffe600', '#2ee06a', '#22b8ff', '#7a3dff', '#ff3dc8'] },
+};
 
+/** Lampen nach Raum gruppiert, Reihenfolge stabil */
+function byArea(hass, eids) {
+  const groups = new Map();
+  for (const eid of eids) {
+    const a = lightInfo(hass, eid).area || '—';
+    if (!groups.has(a)) groups.set(a, []);
+    groups.get(a).push(eid);
+  }
+  return [...groups.values()];
+}
+
+/** Ambient Drift: zeitversetztes Gleiten, abwechselnd heller (etwas kühler) und dunkler (wärmer). */
 function genDrift(hass, eids, p, ikeaMode) {
   const L = p.cycle;
-  const n = Math.max(2, Math.round(p.steps));
+  const n = Math.max(2, 2 * Math.round(p.steps / 2)); // gerade Anzahl -> hell/dunkel wechseln sich sauber ab
+  const range = p.bMax - p.bMin;
   return eids.map((eid, i) => {
     const info = lightInfo(hass, eid);
     const { mode, split } = trackDefaults(info, p.tint ? 'color' : 'ct', ikeaMode);
-    const offset = ((i / Math.max(1, eids.length)) * L) / n;
+    const offset = ((i / Math.max(1, eids.length)) * L) / n + (i % 2) * (L / n);
     const kMin = clamp(p.kMin, info.minK, info.maxK);
     const kMax = clamp(p.kMax, info.minK, info.maxK);
     const kfs = [];
     for (let j = 0; j < n; j++) {
-      const t = r1(((j + rand(-0.25, 0.25)) * (L / n) + offset + L) % L);
-      const pos = Math.random();
-      const b = r1(p.bMin + (0.35 * pos + 0.65 * Math.random()) * (p.bMax - p.bMin));
-      const k = Math.round(kMin + (0.6 * pos + 0.4 * Math.random()) * (kMax - kMin));
+      const t = r1(((j + rand(-0.2, 0.2)) * (L / n) + offset + L) % L);
+      const high = j % 2 === 0;
+      const f = high ? rand(0.65, 1) : rand(0, 0.3);
+      const b = r1(p.bMin + f * range);
+      const k = Math.round(kMin + clamp(0.75 * f + rand(-0.15, 0.25), 0, 1) * (kMax - kMin));
       const base = kelvinToRgb(k);
       const c = rgbToHex(p.tint ? mixRgb(base, hexToRgb(TINTS[(i + j) % TINTS.length]), 0.45) : base);
       kfs.push({ t, b, k, c });
@@ -428,6 +547,122 @@ function genBreathe(hass, eids, p) {
   });
 }
 
+/** Color Accent: pro Raum eine Farblampe wechselt zügig und kontrastreich die Farbe, die übrigen bleiben ruhig. */
+function genAccent(hass, eids, p, ikeaMode) {
+  const colors = (PALETTES[p.palette] || PALETTES.sunset).colors;
+  const L = r1(colors.length * p.change);
+  const tracks = [];
+  byArea(hass, eids).forEach((group, gi) => {
+    const accent = group.find((e) => lightInfo(hass, e).color && !lightInfo(hass, e).isGroup);
+    const shift = (gi * p.change) / 2;
+    group.forEach((eid, li) => {
+      const info = lightInfo(hass, eid);
+      if (eid === accent) {
+        const { split } = trackDefaults(info, 'color', ikeaMode);
+        const kfs = colors.map((c, j) => ({
+          t: r1((j * p.change + shift) % L),
+          b: j % 2 === 0 ? p.hi : p.lo,
+          k: 2700,
+          c,
+        }));
+        tracks.push({ entity: eid, mode: ikeaMode === 'brightness' && info.ikea ? 'bri' : 'color', split, kfs: kfs.sort((a, b) => a.t - b.t) });
+      } else {
+        const { mode, split } = trackDefaults(info, 'ct', ikeaMode);
+        const k1 = clamp(2300, info.minK, info.maxK);
+        const k2 = clamp(2700, info.minK, info.maxK);
+        const o = (li * L) / 4;
+        tracks.push({
+          entity: eid,
+          mode,
+          split,
+          kfs: [
+            { t: r1(o % L), b: p.calm, k: k1, c: rgbToHex(kelvinToRgb(k1)) },
+            { t: r1((o + L / 2) % L), b: r1(p.calm * 0.7), k: k2, c: rgbToHex(kelvinToRgb(k2)) },
+          ].sort((a, b) => a.t - b.t),
+        });
+      }
+    });
+  });
+  return { tracks, length: L };
+}
+
+/** Ripple: ein heller Impuls wandert nacheinander über die Lampen – starker Kontrast, Farbe bleibt. */
+function genRipple(hass, eids, p) {
+  const order = byArea(hass, eids).flat();
+  const n = order.length;
+  const st = p.step;
+  const L = r1(Math.max(n * st, 3 * st));
+  const tracks = order.map((eid, i) => {
+    const peak = i * st;
+    const kfs = [
+      { ...DEFAULT_KF, t: r1((peak - st + L) % L), b: p.lo },
+      { ...DEFAULT_KF, t: r1(peak % L), b: p.hi },
+      { ...DEFAULT_KF, t: r1((peak + 1.5 * st) % L), b: p.lo },
+    ].sort((a, b) => a.t - b.t);
+    return { entity: eid, mode: 'bri', split: false, kfs };
+  });
+  return { tracks, length: L };
+}
+
+const num = (k, label, unit, min, max, step = 1) => ({ k, label, unit, min, max, step });
+const TEMPLATES = {
+  drift: {
+    icon: '☁',
+    name: 'Ambient Drift',
+    desc: 'Jede Lampe gleitet ruhig und zeitversetzt zwischen hell (etwas kühler) und dunkel (wärmer). Benachbarte Lampen sind nie gleich – wie ziehende Wolken.',
+    defaults: { cycle: 90, steps: 6, kMin: 2200, kMax: 3400, bMin: 15, bMax: 70, tint: false },
+    params: [
+      num('cycle', 'Zykluslänge', 's', 20, 1800, 5),
+      num('steps', 'Wechsel pro Zyklus', '', 2, 20, 2),
+      num('kMin', 'Wärmster Ton', 'K', 1800, 6500, 50),
+      num('kMax', 'Kühlster Ton', 'K', 1800, 6500, 50),
+      num('bMin', 'Dunkelste Stelle', '%', 0, 100),
+      num('bMax', 'Hellste Stelle', '%', 1, 100),
+      { k: 'tint', check: 'Farblampen mit zarten Farbtönen (Pfirsich, Rosé, Bernstein)' },
+    ],
+    build(hass, eids, p, ikea) {
+      if (p.kMin > p.kMax) [p.kMin, p.kMax] = [p.kMax, p.kMin];
+      if (p.bMin > p.bMax) [p.bMin, p.bMax] = [p.bMax, p.bMin];
+      return { tracks: genDrift(hass, eids, p, ikea), length: p.cycle };
+    },
+  },
+  breathe: {
+    icon: '≈',
+    name: 'Breathe',
+    desc: 'Alle Lampen werden sanft heller und dunkler, ohne ihre Farbe zu ändern. Mit „Versatz je Raum" läuft das Atmen als Welle durch die Wohnung.',
+    defaults: { period: 10, depth: 30, base: 70, wave: 2 },
+    params: [
+      num('period', 'Atemzug', 's', 4, 120),
+      num('depth', 'Tiefe', '%', 5, 90),
+      num('base', 'Grundhelligkeit', '%', 5, 100),
+      num('wave', 'Versatz je Raum', 's', 0, 60, 0.5),
+    ],
+    build: (hass, eids, p) => ({ tracks: genBreathe(hass, eids, p), length: p.period }),
+  },
+  accent: {
+    icon: '✦',
+    name: 'Color Accent',
+    desc: 'Pro Raum leuchtet eine Farblampe kräftig und wechselt zügig die Farbe, abwechselnd hell und gedämpft. Alle anderen Lampen im Raum bleiben ruhig in gedimmtem Warmweiß.',
+    defaults: { palette: 'sunset', change: 8, hi: 90, lo: 35, calm: 25 },
+    params: [
+      { k: 'palette', select: Object.fromEntries(Object.entries(PALETTES).map(([k, v]) => [k, v.name])), label: 'Farben' },
+      num('change', 'Farbwechsel alle', 's', 2, 120),
+      num('hi', 'Akzent hell', '%', 1, 100),
+      num('lo', 'Akzent gedämpft', '%', 1, 100),
+      num('calm', 'Übrige Lampen', '%', 1, 100),
+    ],
+    build: (hass, eids, p, ikea) => genAccent(hass, eids, p, ikea),
+  },
+  ripple: {
+    icon: '〰',
+    name: 'Ripple',
+    desc: 'Ein heller Lichtimpuls wandert nacheinander über die gewählten Lampen (nach Raum sortiert) – flotter Takt, starker Hell-Dunkel-Kontrast. Die Farben bleiben, wie sie sind.',
+    defaults: { step: 2, hi: 90, lo: 8 },
+    params: [num('step', 'Takt je Lampe', 's', 1, 30, 0.5), num('hi', 'Impuls', '%', 1, 100), num('lo', 'Pause', '%', 0, 100)],
+    build: (hass, eids, p) => genRipple(hass, eids, p),
+  },
+};
+
 /* ------------------------------------------------------------------ */
 /* Die Karte                                                           */
 /* ------------------------------------------------------------------ */
@@ -437,7 +672,7 @@ const LANE_H = 64;
  * Bearbeitungsstand außerhalb des Elements: Home Assistant baut Karten gelegentlich
  * neu auf (z. B. kurz nach dem Laden). Ungespeicherte Änderungen bleiben so erhalten.
  */
-const SESSION = { show: null, sel: null, dirty: false, msg: '', gen: null };
+const SESSION = { show: null, sel: null, dirty: false, msg: '', gen: null, settings: null, settingsOpen: false };
 
 class FadeStudioCard extends HTMLElement {
   constructor() {
@@ -454,15 +689,14 @@ class FadeStudioCard extends HTMLElement {
   set _msg(v) { SESSION.msg = v; }
   get _gen() { return SESSION.gen; }
   set _gen(v) { SESSION.gen = v; }
+  get _settings() { return SESSION.settings || { ...DEFAULT_SETTINGS }; }
 
   setConfig(config) {
     this._config = config || {};
   }
   _ikeaMode() {
-    return IKEA_MODES[this._config?.ikea_mode] ? this._config.ikea_mode : 'split';
-  }
-  static getConfigElement() {
-    return document.createElement('fade-studio-card-editor');
+    const m = this._settings.ikea_mode;
+    return IKEA_MODES[m] ? m : 'split';
   }
   getCardSize() {
     return 10;
@@ -477,6 +711,7 @@ class FadeStudioCard extends HTMLElement {
     if (first) {
       if (!this._show) this._newShow();
       this._render();
+      if (!SESSION.settings) this._loadSettings();
       this._ro = new ResizeObserver(() => this._renderLanes());
       this._timer = setInterval(() => this._tick(), 100);
     } else {
@@ -579,6 +814,74 @@ class FadeStudioCard extends HTMLElement {
     return false;
   }
 
+  _autoEid() {
+    return Object.keys(this._hass.states).find(
+      (e) => e.startsWith('automation.') && this._hass.states[e].attributes?.id === AUTO_ID
+    );
+  }
+
+  async _loadSettings() {
+    let st = { ...DEFAULT_SETTINGS };
+    if (this._autoEid()) {
+      try {
+        const cfg = await this._hass.callApi('GET', `config/automation/config/${AUTO_ID}`);
+        st = { ...st, ...(cfg?.variables?.fade_studio_settings || {}) };
+      } catch (e) {
+        /* noch nicht vorhanden */
+      }
+    }
+    SESSION.settings = st;
+    if (SESSION.settingsOpen) this._render();
+  }
+
+  /** Schreibt die Auto-Stopp-Automation passend zu allen Abläufen und Einstellungen neu. */
+  async _syncAutomation(labelId) {
+    const shows = {};
+    for (const eid of this._showIds()) {
+      try {
+        const cfg = await this._hass.callApi('GET', `config/script/config/${eid.replace('script.', '')}`);
+        shows[eid] = [...new Set((cfg?.variables?.fade_studio?.show?.tracks || []).map((t) => t.entity).filter(Boolean))];
+      } catch (e) {
+        /* übersprungen */
+      }
+    }
+    await this._hass.callApi('POST', `config/automation/config/${AUTO_ID}`, buildAutomation(this._settings, shows));
+    const lid = labelId || (await this._ensureLabel());
+    for (let i = 0; i < 20 && !this._autoEid(); i++) await new Promise((r) => setTimeout(r, 300));
+    const ae = this._autoEid();
+    if (ae) await this._addLabel(ae, lid);
+  }
+
+  async _saveSettings(st) {
+    if (!this._hass.user?.is_admin) return alert('Zum Speichern der Einstellungen sind Administratorrechte nötig.');
+    SESSION.settings = { ...DEFAULT_SETTINGS, ...st };
+    try {
+      for (const eid of this._showIds()) {
+        const id = eid.replace('script.', '');
+        const cfg = await this._hass.callApi('GET', `config/script/config/${id}`);
+        const show = cfg?.variables?.fade_studio?.show;
+        if (show) await this._hass.callApi('POST', `config/script/config/${id}`, buildScript({ ...show, id }, SESSION.settings));
+      }
+      await this._syncAutomation();
+      this._setMsg('Einstellungen gespeichert.');
+    } catch (e) {
+      this._setMsg('Einstellungen konnten nicht gespeichert werden: ' + (e.message || e.body?.message || JSON.stringify(e)));
+    }
+  }
+
+  /** Laufenden Ablauf sofort anhalten und – falls er lief – die Lampen auf den Stand vor dem Start setzen. */
+  async _stopAndRestore(id) {
+    const h = this._hass;
+    const se = 'script.' + id;
+    const snap = `scene.${id}${SNAP_SUFFIX}`;
+    const running = h.states[se]?.state === 'on';
+    if (h.states[se]) await h.callService('script', 'turn_off', { entity_id: se });
+    if (h.states[snap]) {
+      if (running) await h.callService('scene', 'turn_on', { entity_id: snap, transition: 2 }).catch(() => {});
+      await h.callService('scene', 'delete', { entity_id: snap }).catch(() => {});
+    }
+  }
+
   async _save() {
     const s = this._show;
     if (!this._hass.user?.is_admin) return this._setMsg('Zum Speichern sind Administratorrechte nötig.');
@@ -608,8 +911,10 @@ class FadeStudioCard extends HTMLElement {
         });
         await this._addLabel(dimmer, labelId, { name: `${s.name} – Helligkeit` });
       }
-      await this._hass.callApi('POST', `config/script/config/${s.id}`, buildScript(s));
+      await this._hass.callApi('POST', `config/script/config/${s.id}`, buildScript(s, this._settings));
       await this._addLabel(`script.${s.id}`, labelId);
+      for (let i = 0; i < 20 && !this._hass.states[`script.${s.id}`]; i++) await new Promise((r) => setTimeout(r, 300));
+      await this._syncAutomation(labelId);
       this._dirty = false;
       this._setMsg(`Gespeichert als script.${s.id}`);
       this._render();
@@ -620,7 +925,7 @@ class FadeStudioCard extends HTMLElement {
 
   async _deleteShowById(id) {
     const h = this._hass;
-    if (h.states['script.' + id]) await h.callService('script', 'turn_off', { entity_id: 'script.' + id });
+    await this._stopAndRestore(id);
     try {
       await h.callApi('DELETE', `config/script/config/${id}`);
     } catch (e) {
@@ -630,8 +935,6 @@ class FadeStudioCard extends HTMLElement {
     for (const n of nums.filter((x) => x.name === `${id} dimmer`)) {
       await h.callWS({ type: 'input_number/delete', input_number_id: n.id });
     }
-    const snap = `scene.${id}${SNAP_SUFFIX}`;
-    if (h.states[snap]) await h.callService('scene', 'delete', { entity_id: snap }).catch(() => {});
   }
 
   async _deleteShow() {
@@ -639,6 +942,8 @@ class FadeStudioCard extends HTMLElement {
     if (!confirm(`Ablauf „${this._show.name}" mit Skript und Helligkeitsregler löschen?`)) return;
     this._setMsg('Lösche …');
     await this._deleteShowById(this._show.id);
+    for (let i = 0; i < 20 && this._hass.states[`script.${this._show.id}`]; i++) await new Promise((r) => setTimeout(r, 300));
+    await this._syncAutomation().catch(() => {});
     this._newShow();
     this._setMsg('Gelöscht.');
     this._render();
@@ -648,14 +953,23 @@ class FadeStudioCard extends HTMLElement {
     const ids = this._showIds().map((e) => e.replace('script.', ''));
     if (
       !confirm(
-        `Alles von Fade Studio entfernen?\n\n${ids.length} Ablauf/Abläufe mit Skripten, Helligkeitsreglern und dem Label „${LABEL}" werden gelöscht. ` +
-          'Danach kannst du die Karte in HACS deinstallieren – es bleibt nichts zurück.'
+        'Alles von Fade Studio entfernen?\n\n' +
+          '• Laufende Abläufe werden sofort gestoppt, die Lampen gehen auf den Stand vor dem Start zurück.\n' +
+          `• Gelöscht werden ${ids.length} Ablauf/Abläufe (Skripte), ihre Helligkeitsregler, die Automation „Fade Studio: Auto-Stopp" und das Label „${LABEL}".\n` +
+          '• Die Einstellungen gehen verloren.\n\n' +
+          'Die Karte selbst bleibt – danach kannst du sie in HACS deinstallieren.'
       )
     )
       return;
+    SESSION.settingsOpen = false;
     this._setMsg('Entferne alles …');
     try {
+      // Erst alles anhalten und zurücksetzen, dann löschen.
+      for (const id of ids) await this._stopAndRestore(id);
+      for (const e of Object.keys(this._hass.states).filter((x) => x.startsWith('scene.' + PREFIX) && x.endsWith(SNAP_SUFFIX)))
+        await this._hass.callService('scene', 'delete', { entity_id: e }).catch(() => {});
       for (const id of ids) await this._deleteShowById(id);
+      if (this._autoEid()) await this._hass.callApi('DELETE', `config/automation/config/${AUTO_ID}`).catch(() => {});
       const nums = await this._hass.callWS({ type: 'input_number/list' });
       for (const n of nums.filter((x) => x.name?.startsWith(PREFIX) && x.name.endsWith(' dimmer'))) {
         await this._hass.callWS({ type: 'input_number/delete', input_number_id: n.id });
@@ -665,6 +979,7 @@ class FadeStudioCard extends HTMLElement {
         await this._hass.callWS({ type: 'config/label_registry/delete', label_id: l.label_id });
       }
       this._newShow();
+      SESSION.settings = { ...DEFAULT_SETTINGS };
       this._setMsg('Alles entfernt. Die Karte kann jetzt in HACS deinstalliert werden.');
     } catch (e) {
       this._setMsg('Fehler: ' + (e.message || JSON.stringify(e)));
@@ -784,8 +1099,11 @@ class FadeStudioCard extends HTMLElement {
             ${ids.map((e) => `<option value="${e}" ${e === this._scriptEid() ? 'selected' : ''}>${esc(h.states[e].attributes.friendly_name?.replace(/^Fade Studio: /, '') || e)}</option>`).join('')}
           </select>
           <span class="grow"></span>
-          <button data-gen="drift" title="Vorlage: langsames, zeitversetztes Gleiten zwischen warmen und kühleren Tönen">☁ Ambient Drift …</button>
-          <button data-gen="breathe" title="Vorlage: sanftes Heller- und Dunklerwerden, als Welle durch die Räume">≈ Breathe …</button>
+          <span class="hint">Vorlage:</span>
+          ${Object.entries(TEMPLATES)
+            .map(([k, t]) => `<button data-gen="${k}" title="${esc(t.desc)}">${t.icon} ${esc(t.name)}</button>`)
+            .join('')}
+          <button id="settings" class="icon gear" title="Einstellungen">⚙</button>
         </div>
 
         <div class="props">
@@ -851,7 +1169,7 @@ class FadeStudioCard extends HTMLElement {
               </div>`;
             })
             .join('')}
-          ${s.tracks.length ? '' : `<div class="empty">Noch keine Spuren. Füge unten eine Lampe hinzu – oder starte mit einer Vorlage (☁ Ambient Drift / ≈ Breathe).</div>`}
+          ${s.tracks.length ? '' : `<div class="empty">Noch keine Spuren. Füge unten eine Lampe hinzu – oder starte oben mit einer Vorlage.</div>`}
           <div class="row add">
             <div class="lab"><select id="addSel">${lightOpts('')}</select></div>
             <div><button id="addTrack">＋ Spur hinzufügen</button> <span class="hint">Klick in eine Spur setzt einen Punkt · Punkte lassen sich ziehen</span></div>
@@ -864,10 +1182,9 @@ class FadeStudioCard extends HTMLElement {
           <button id="save" class="primary">${this._dirty ? '● ' : ''}Speichern</button>
           <button id="delete">${s.id ? 'Ablauf löschen' : 'Verwerfen'}</button>
           <span id="msg" class="msg">${esc(this._msg)}</span>
-          <span class="grow"></span>
-          <button id="removeAll" class="danger" title="Löscht alle von Fade Studio erzeugten Skripte, Helfer und das Label">Alles entfernen</button>
         </div>
         ${this._gen ? this._genHtml(lights) : ''}
+        ${SESSION.settingsOpen ? this._settingsHtml() : ''}
       </ha-card>`;
     this._bind();
     this._renderLanes();
@@ -908,47 +1225,81 @@ class FadeStudioCard extends HTMLElement {
 
   _genHtml(lights) {
     const g = this._gen;
+    const T = TEMPLATES[g.type];
     const p = g.p;
-    const num = (k, label, unit, min, max, step = 1) =>
-      `<label>${label} <input data-gp="${k}" type="number" min="${min}" max="${max}" step="${step}" value="${p[k]}"> ${unit}</label>`;
     const areas = [...new Set(lights.map((l) => l.area).filter(Boolean))];
+    const field = (q) => {
+      if (q.check) return `<label class="chk"><input type="checkbox" data-gp="${q.k}" ${p[q.k] ? 'checked' : ''}> ${esc(q.check)}</label>`;
+      if (q.select)
+        return `<label>${esc(q.label)} <select data-gp="${q.k}">${Object.entries(q.select)
+          .map(([v, t]) => `<option value="${v}" ${p[q.k] === v ? 'selected' : ''}>${esc(t)}</option>`)
+          .join('')}</select></label>`;
+      return `<label>${esc(q.label)} <input data-gp="${q.k}" type="number" min="${q.min}" max="${q.max}" step="${q.step}" value="${p[q.k]}"> ${q.unit}</label>`;
+    };
     return `<div class="overlay"><div class="dialog">
-      <h3>${g.type === 'drift' ? '☁ Ambient Drift' : '≈ Breathe'}</h3>
-      <p class="hint">${
-        g.type === 'drift'
-          ? 'Jede Lampe gleitet langsam und zeitversetzt zwischen warmen und etwas kühleren Tönen, hell und dunkel. Benachbarte Lampen sind nie gleich – wie ziehende Wolken.'
-          : 'Alle Lampen werden sanft heller und dunkler, ohne ihre Farbe zu ändern. Mit „Versatz je Raum" läuft das Atmen als Welle durch die Wohnung.'
-      }</p>
+      <h3>${T.icon} ${esc(T.name)}</h3>
+      <p class="hint">${esc(T.desc)}</p>
       <div class="genlights">
         <div class="arearow">Raum wählen: ${areas.map((a) => `<button data-garea="${esc(a)}">${esc(a)}</button>`).join(' ')} <button data-garea="">keine</button></div>
         ${lights
           .map(
             (l) =>
-              `<label class="chk"><input type="checkbox" data-gl="${l.eid}" ${g.lights.includes(l.eid) ? 'checked' : ''}>${esc(l.area ? l.area + ' · ' : '')}${esc(l.name)}${l.isGroup ? ' <i>(Gruppe)</i>' : ''}</label>`
+              `<label class="chk"><input type="checkbox" data-gl="${l.eid}" ${g.lights.includes(l.eid) ? 'checked' : ''}>${esc(l.area ? l.area + ' · ' : '')}${esc(l.name)}${l.isGroup ? ' <i>(Gruppe)</i>' : ''}${l.ikea ? ' <span class="badge">IKEA</span>' : ''}</label>`
           )
           .join('')}
       </div>
-      <div class="genparams">
-        ${
-          g.type === 'drift'
-            ? num('cycle', 'Zykluslänge', 's', 30, 3600, 10) +
-              num('steps', 'Wechsel pro Zyklus', '', 2, 20) +
-              num('kMin', 'Wärmster Ton', 'K', 1800, 6500, 50) +
-              num('kMax', 'Kühlster Ton', 'K', 1800, 6500, 50) +
-              num('bMin', 'Dunkelste Stelle', '%', 0, 100) +
-              num('bMax', 'Hellste Stelle', '%', 1, 100) +
-              `<label class="chk"><input type="checkbox" data-gp="tint" ${p.tint ? 'checked' : ''}> Farblampen mit zarten Farbtönen (Pfirsich, Rosé, Bernstein)</label>`
-            : num('period', 'Atemzug', 's', 4, 120, 1) +
-              num('depth', 'Tiefe', '%', 5, 90) +
-              num('base', 'Grundhelligkeit', '%', 5, 100) +
-              num('wave', 'Versatz je Raum', 's', 0, 60, 0.5)
-        }
-      </div>
+      <div class="genparams">${T.params.map(field).join('')}</div>
       <div class="foot">
         <button id="genOk" class="primary">Erzeugen</button>
         <button id="genCancel">Abbrechen</button>
         <span class="hint">Ersetzt die Spuren des aktuellen Ablaufs. Danach frei bearbeitbar.</span>
       </div>
+    </div></div>`;
+  }
+
+  _settingsHtml() {
+    const st = this._settings;
+    const autoExists = !!this._autoEid();
+    return `<div class="overlay"><div class="dialog settings">
+      <h3>⚙ Einstellungen</h3>
+
+      <section>
+        <h4>IKEA-Lampen</h4>
+        <p class="hint">IKEA-Lampen werden automatisch erkannt (Hersteller bzw. Modell – auch über Hue Bridge und Matter) und in der Spur mit <span class="badge">IKEA</span> markiert. Viele können Ton und Helligkeit nicht gleichzeitig überblenden.</p>
+        <label>Neue Spuren mit IKEA-Lampen:
+          <select id="stIkea">${Object.entries(IKEA_MODES)
+            .map(([v, t]) => `<option value="${v}" ${st.ikea_mode === v ? 'selected' : ''}>${t}</option>`)
+            .join('')}</select>
+        </label>
+        <p class="hint">Gilt für neu angelegte Spuren und Vorlagen. Pro Spur lässt sich „nacheinander" jederzeit an- und abhaken.</p>
+      </section>
+
+      <section>
+        <h4>Automatisch stoppen</h4>
+        <label class="chk wrap"><input type="checkbox" id="stAway" ${st.stop_away ? 'checked' : ''}> Wenn niemand mehr zu Hause ist (Bereich „Zuhause" wird leer)</label>
+        <label class="indent">danach:
+          <select id="stAwayAction">
+            <option value="off" ${st.away_action === 'off' ? 'selected' : ''}>Lampen ausschalten</option>
+            <option value="restore" ${st.away_action === 'restore' ? 'selected' : ''}>Zustand vor dem Start wiederherstellen</option>
+            <option value="keep" ${st.away_action === 'keep' ? 'selected' : ''}>Lampen so lassen, wie sie gerade sind</option>
+          </select>
+        </label>
+        <label class="chk wrap"><input type="checkbox" id="stOff" ${st.stop_external_off ? 'checked' : ''}> Wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird – per Schalter, App, Sprachbefehl oder „Alles aus". Der Ablauf stoppt, die Lampen bleiben aus.</label>
+        <p class="hint">„Niemand zu Hause" läuft über die Automation „Fade Studio: Auto-Stopp" (Einstellungen → Automationen)${autoExists ? '' : ', die beim Speichern angelegt wird'}. Dafür müssen Personen mit Standort eingerichtet sein, z. B. über die Companion-App. Das Erkennen von fremdem Ausschalten steckt direkt in jedem Ablauf.</p>
+      </section>
+
+      <div class="foot">
+        <button id="stSave" class="primary">Speichern</button>
+        <button id="stClose">Schließen</button>
+        <span class="grow"></span>
+        <span class="hint">Fade Studio ${FS_VERSION}</span>
+      </div>
+
+      <section class="dangerzone">
+        <h4>Alles entfernen</h4>
+        <p class="hint">Stoppt alle laufenden Abläufe und setzt ihre Lampen auf den Stand vor dem Start zurück. Danach werden alle Abläufe (Skripte), Helligkeitsregler, die Auto-Stopp-Automation, die Einstellungen und das Label „${LABEL}" gelöscht. Die Karte selbst bleibt und kann anschließend in HACS deinstalliert werden.</p>
+        <button id="removeAll" class="danger">Alles entfernen …</button>
+      </section>
     </div></div>`;
   }
 
@@ -1086,7 +1437,26 @@ class FadeStudioCard extends HTMLElement {
     on('#dimmer', 'change', (e) => this._setDimmer(e.target.value));
     on('#save', 'click', () => this._save());
     on('#delete', 'click', () => this._deleteShow());
-    on('#removeAll', 'click', () => this._removeAll());
+    on('#settings', 'click', () => {
+      SESSION.settingsOpen = true;
+      this._render();
+      if (!SESSION.settings) this._loadSettings();
+    });
+    if (SESSION.settingsOpen) {
+      on('#removeAll', 'click', () => this._removeAll());
+      on('#stClose', 'click', () => ((SESSION.settingsOpen = false), this._render()));
+      on('#stSave', 'click', async () => {
+        const g = (id) => r.querySelector(id);
+        await this._saveSettings({
+          ikea_mode: g('#stIkea').value,
+          stop_away: g('#stAway').checked,
+          away_action: g('#stAwayAction').value,
+          stop_external_off: g('#stOff').checked,
+        });
+        SESSION.settingsOpen = false;
+        this._render();
+      });
+    }
     on('#addTrack', 'click', () => {
       const eid = r.querySelector('#addSel').value;
       if (!eid) return;
@@ -1172,14 +1542,7 @@ class FadeStudioCard extends HTMLElement {
       el.addEventListener('click', () => {
         const type = el.dataset.gen;
         const current = s.tracks.map((t) => t.entity);
-        this._gen = {
-          type,
-          lights: current,
-          p:
-            type === 'drift'
-              ? { cycle: 300, steps: 5, kMin: 2200, kMax: 3400, bMin: 15, bMax: 60, tint: false }
-              : { period: 10, depth: 30, base: 70, wave: 2 },
-        };
+        this._gen = { type, lights: current, p: { ...TEMPLATES[type].defaults } };
         this._render();
       })
     );
@@ -1199,24 +1562,18 @@ class FadeStudioCard extends HTMLElement {
       );
       r.querySelectorAll('[data-gp]').forEach((el) =>
         el.addEventListener('change', () => {
-          this._gen.p[el.dataset.gp] = el.type === 'checkbox' ? el.checked : Number(el.value);
+          this._gen.p[el.dataset.gp] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : Number(el.value);
         })
       );
       on('#genCancel', 'click', () => ((this._gen = null), this._render()));
       on('#genOk', 'click', () => {
         const g = this._gen;
         if (!g.lights.length) return alert('Bitte mindestens eine Lampe wählen.');
-        if (g.type === 'drift') {
-          if (g.p.kMin > g.p.kMax) [g.p.kMin, g.p.kMax] = [g.p.kMax, g.p.kMin];
-          if (g.p.bMin > g.p.bMax) [g.p.bMin, g.p.bMax] = [g.p.bMax, g.p.bMin];
-          s.length = g.p.cycle;
-          s.tracks = genDrift(this._hass, g.lights, g.p, this._ikeaMode());
-          if (s.name === 'Neuer Ablauf') s.name = 'Ambient Drift';
-        } else {
-          s.length = g.p.period;
-          s.tracks = genBreathe(this._hass, g.lights, g.p);
-          if (s.name === 'Neuer Ablauf') s.name = 'Breathe';
-        }
+        const T = TEMPLATES[g.type];
+        const res = T.build(this._hass, g.lights, g.p, this._ikeaMode());
+        s.length = res.length;
+        s.tracks = res.tracks;
+        if (s.name === 'Neuer Ablauf' || Object.values(TEMPLATES).some((x) => x.name === s.name)) s.name = T.name;
         s.loop = true;
         this._gen = null;
         this._sel = null;
@@ -1275,6 +1632,13 @@ const STYLE = `
     background: var(--primary-color, #03a9f4); box-shadow: 0 0 6px var(--primary-color, #03a9f4); }
   .phtime { position: absolute; top: -2px; left: 5px; font-size: .72em; font-weight: 600; padding: 0 4px; border-radius: 4px;
     background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); white-space: nowrap; }
+  .gear { font-size: 1.3em; padding: 2px 8px; }
+  .settings section { margin: 12px 0; }
+  .settings h4 { margin: 0 0 6px; }
+  .settings label { display: block; margin: 6px 0; white-space: normal; }
+  .settings .indent { margin-left: 26px; }
+  .dangerzone { border: 1px solid var(--error-color, #db4437); border-radius: 8px; padding: 10px 12px; }
+  .dangerzone h4 { color: var(--error-color, #db4437); }
   .badge { font-size: .68em; font-weight: 600; padding: 1px 5px; border-radius: 4px; vertical-align: middle;
     background: var(--secondary-background-color, #eee); color: var(--secondary-text-color); border: 1px solid var(--divider-color, #ccc); }
   .empty { padding: 18px; text-align: center; color: var(--secondary-text-color); border: 1px dashed var(--divider-color, #ccc); border-radius: 8px; }
@@ -1300,38 +1664,7 @@ const STYLE = `
   }
 `;
 
-class FadeStudioCardEditor extends HTMLElement {
-  setConfig(config) {
-    this._config = { ...(config || {}) };
-    this._render();
-  }
-  set hass(h) {
-    this._hass = h;
-  }
-  _render() {
-    if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
-    const cur = IKEA_MODES[this._config.ikea_mode] ? this._config.ikea_mode : 'split';
-    this.shadowRoot.innerHTML = `
-      <style>
-        label { display: block; font-weight: 500; margin-bottom: 6px; }
-        select { font: inherit; width: 100%; padding: 8px; border-radius: 6px; color: var(--primary-text-color);
-          background: var(--card-background-color, #fff); border: 1px solid var(--divider-color, #ccc); }
-        p { color: var(--secondary-text-color); font-size: .9em; }
-      </style>
-      <label for="ikea">IKEA-Lampen (automatisch erkannt)</label>
-      <select id="ikea">${Object.entries(IKEA_MODES)
-        .map(([v, t]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${t}</option>`)
-        .join('')}</select>
-      <p>Gilt für neu angelegte Spuren und Vorlagen. Bestehende Spuren lassen sich einzeln über „nacheinander“ bzw. den Spur-Modus ändern.</p>`;
-    this.shadowRoot.querySelector('#ikea').addEventListener('change', (e) => {
-      this._config = { ...this._config, ikea_mode: e.target.value };
-      this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: this._config }, bubbles: true, composed: true }));
-    });
-  }
-}
-
 customElements.define('fade-studio-card', FadeStudioCard);
-customElements.define('fade-studio-card-editor', FadeStudioCardEditor);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'fade-studio-card',
@@ -1342,4 +1675,4 @@ window.customCards.push({
 if (typeof window.document !== 'undefined') console.info(`%c FADE STUDIO %c ${FS_VERSION} `, 'background:#ff9f43;color:#000', 'background:#333;color:#fff');
 
 // Für Tests in Node
-if (typeof module !== 'undefined') module.exports = { buildScript, compileTrack, normalizeKfs, stateAt, genDrift, genBreathe };
+if (typeof module !== 'undefined') module.exports = { buildScript, compileTrack, normalizeKfs, stateAt, genDrift, genBreathe, genAccent, genRipple, buildAutomation };
