@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.7.1';
+const FS_VERSION = '0.7.2';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
@@ -143,6 +143,7 @@ function lightInfo(hass, eid) {
     maxK: a.max_color_temp_kelvin || 6500,
     ikea: /ikea/i.test(dev?.manufacturer || '') || /tradfri|kajplats|ikea/i.test(dev?.model || ''),
     available: !!st && st.state !== 'unavailable',
+    matter: ent?.platform === 'matter',
   };
 }
 
@@ -173,7 +174,8 @@ function playTracks(hass, show) {
       else out.push({ entity: m, mode: hass ? memberMode(tr.mode, lightInfo(hass, m)) : tr.mode, split: tr.split, kfs: tr.kfs });
     }
   }
-  return out;
+  // Matter-Lampen blenden aus „aus" selbst weich ein – ein Vorab-Einschalten auf 1 % lässt sie blinken.
+  return hass ? out.map((t) => ({ ...t, noPreOn: lightInfo(hass, t.entity).matter })) : out;
 }
 
 /**
@@ -246,7 +248,7 @@ function lightData(mode, part, dimmer, ti) {
   const cur = V('cur', ti);
   const d = {};
   if (part !== 'color')
-    d.brightness_pct = `{{ [1, (${cur}.b * (states('${dimmer}') | float(100)) / 100) | round(0) | int] | max }}`;
+    d.brightness_pct = `{{ [1, [100, (${cur}.b * fs_gain * (states('${dimmer}') | float(100)) / 100) | round(0) | int] | min] | max }}`;
   if (part !== 'bri') {
     if (mode === 'ct') d.color_temp_kelvin = `{{ ${cur}.k }}`;
     if (mode === 'color') d.xy_color = `{{ ${cur}.c }}`;
@@ -378,7 +380,7 @@ function trackBranch(show, tr, dimmer, ti, o) {
         then: [
           {
             // Ausgeschaltete Lampe: erst ganz dunkel in der Zielfarbe einschalten, dann einblenden – kein Farbsprung.
-            if: tpl(`{{ is_state('${tr.entity}', 'off') and ${trv}.first.b > 0 }}`),
+            if: tpl(`{{ ${tr.noPreOn ? 'false' : 'true'} and is_state('${tr.entity}', 'off') and ${trv}.first.b > 0 }}`),
             then: [{ action: 'light.turn_on', target: { entity_id: tr.entity }, data: preOnData }],
           },
           { variables: { [cur]: `{{ ${trv}.first }}`, [dur]: Math.max(1, show.fadeIn || 1) } },
@@ -471,6 +473,8 @@ function buildScript(show, settings = DEFAULT_SETTINGS, play = null) {
     then: [{ action: 'scene.create', data: { scene_id: snapId, snapshot_entities: lights } }],
   });
   const o = { stopOnOff: settings.stop_external_off !== false, scriptEid: `script.${id}`, snap };
+  const peak = Math.max(1, ...tracks.flatMap((t) => (t.kfs || []).map((k) => Number(k.b) || 0)));
+  seq.push({ variables: { fs_gain: Math.round((100 / peak) * 1000) / 1000 } });
   seq.push({ parallel: tracks.map((t, ti) => trackBranch(show, t, dimmer, ti, o)) });
   if (!show.loop) seq.push(...endActions(show, snap, lights));
   return {
@@ -1255,13 +1259,22 @@ class FadeStudioCard extends HTMLElement {
     if (Number(this._hass.states[`input_number.${id}_dimmer`]?.state) === 0)
       this._setMsg('Hinweis: Die Gesamthelligkeit steht auf 0 % – die Lampen leuchten nur ganz schwach.');
     const off = this._paused();
+    const others = this._showIds().filter((x) => x !== e && h_on(this._hass, x));
+    const wait = others.length ? 1.5 : 0;
+    const otherNames = others.map((x) => this._hass.states[x]?.attributes?.friendly_name?.replace(/^Fade Studio: /, '') || x);
+    const n = playTracks(this._hass, this._show).length;
+    SESSION.phase = {
+      id,
+      until: Date.now() + (wait + (off != null ? 0 : this._show.fadeIn || 0)) * 1000,
+      text: `${others.length ? `Beendet „${otherNames.join('", „')}" und stellt dessen Zustand wieder her, dann ` : ''}${off != null ? 'macht an der gemerkten Stelle weiter' : `blendet ${n} ${n === 1 ? 'Lampe' : 'Lampen'} in den ersten Punkt ein`}`,
+    };
     if (off != null) {
       delete SESSION.paused[id];
       savePaused();
-      SESSION.playBase[id] = { start: Date.now(), off, fade: 0 };
+      SESSION.playBase[id] = { start: Date.now(), off, fade: wait };
       this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: false, start_at: off } });
     } else {
-      SESSION.playBase[id] = { start: Date.now(), off: 0, fade: this._show.fadeIn || 0 };
+      SESSION.playBase[id] = { start: Date.now(), off: 0, fade: wait + (this._show.fadeIn || 0) };
       this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: false } });
     }
   }
@@ -1270,6 +1283,9 @@ class FadeStudioCard extends HTMLElement {
     if (!e) return;
     delete SESSION.paused[this._show.id];
     savePaused();
+    const end = this._show.end || {};
+    const what = { restore: 'zurück zum Zustand vor dem Start', off: 'Lampen gehen aus', scene: 'Szene wird aktiviert', hold: 'Lampen bleiben, wie sie sind' }[end.mode] || '';
+    SESSION.phase = { id: this._show.id, until: Date.now() + (end.mode === 'hold' ? 1 : end.fade ?? 3) * 1000, text: `Blendet aus – ${what}` };
     this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: true } });
   }
   _setDimmer(v) {
@@ -1413,6 +1429,9 @@ class FadeStudioCard extends HTMLElement {
 
   _status() {
     if (!this._show.id) return 'Noch nicht gespeichert';
+    const ph = SESSION.phase;
+    if (ph && ph.id === this._show.id && Date.now() < ph.until)
+      return `${ph.text.charAt(0).toUpperCase()}${ph.text.slice(1)} … ${Math.ceil((ph.until - Date.now()) / 1000)} s`;
     if (this._running()) return this._show.loop ? 'Läuft · Schleife' : 'Läuft';
     const pz = this._paused();
     return pz != null ? `Pausiert bei ${r1(pz).toFixed(1)} s` : 'Gestoppt';
@@ -1478,7 +1497,7 @@ class FadeStudioCard extends HTMLElement {
           </div>
           <div class="clock"><div class="t mono"><span id="clk">0.0</span><span class="tot">/ ${r1(s.length)} s</span></div><div class="lbl" id="status"></div></div>
           <span></span>
-          <div class="master" title="Dimmt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis – auch während er läuft">
+          <div class="master" title="Regelt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis, auch während er läuft. 100 % = der hellste Punkt des Ablaufs leuchtet mit voller Helligkeit.">
             ${
               dimmer
                 ? `<span class="lbl">Helligkeit gesamt</span><input type="range" class="rng" id="dimmer" min="0" max="100" step="1" value="${dimmer.state}"><span class="mono val" id="dimv">${Math.round(dimmer.state)} %</span>`
@@ -1662,7 +1681,7 @@ class FadeStudioCard extends HTMLElement {
         <button class="key" id="play" data-cur="${cur}"></button>
         <button class="key" id="stop" title="Sanft stoppen">${this._ic('stop')}</button>
       </div>
-      <div class="rmaster band" title="Dimmt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis – auch während er läuft">
+      <div class="rmaster band" title="Regelt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis, auch während er läuft. 100 % = der hellste Punkt des Ablaufs leuchtet mit voller Helligkeit.">
         <div class="top"><span class="lbl">Helligkeit gesamt</span><span class="mono" id="dimv">${dimmer ? Math.round(dimmer.state) + ' %' : '–'}</span></div>
         <input type="range" class="rng" id="dimmer" min="0" max="100" step="1" value="${dimmer ? dimmer.state : 100}" ${dimmer ? '' : 'disabled'}>
       </div>
@@ -1713,8 +1732,12 @@ class FadeStudioCard extends HTMLElement {
         .map(([k, t]) => `<button class="chip ${k === g.type ? 'on' : ''}" data-tpl="${k}">${esc(t.name)}</button>`)
         .join('')}</div>
       <p class="lbl desc">${esc(T.desc)}</p>
-      <div class="sec2"><span class="lbl">Lampen</span><span class="chips">${areas
-        .map((a) => `<button class="chip" data-garea="${esc(a)}">${esc(a)}</button>`)
+      <div class="sec2"><span class="lbl">Lampen · ${g.lights.length} gewählt</span><span class="chips">${areas
+        .map((a) => {
+          const ids = lights.filter((l) => l.area === a && !l.isGroup).map((l) => l.eid);
+          const on = ids.length && ids.every((e) => g.lights.includes(e));
+          return `<button class="chip ${on ? 'on' : ''}" data-garea="${esc(a)}" title="Alle Lampen in ${esc(a)} an- bzw. abwählen">${esc(a)}</button>`;
+        })
         .join('')}<button class="chip" data-garea="">Keine</button></span></div>
       <div class="genlights">${lights
         .map(
@@ -1822,6 +1845,12 @@ class FadeStudioCard extends HTMLElement {
 
   _tick() {
     const r = this.shadowRoot;
+    const phase = SESSION.phase;
+    if (phase && (Date.now() < phase.until || !phase.shown)) {
+      if (Date.now() >= phase.until) phase.shown = true;
+      const st = r.querySelector('#status');
+      if (st) st.textContent = this._status();
+    }
     const t = this._playTime();
     const clk = r.querySelector('#clk');
     if (clk) clk.textContent = t == null ? '0.0' : r1(t).toFixed(1);
@@ -2147,7 +2176,12 @@ class FadeStudioCard extends HTMLElement {
       );
       all('[data-garea]', (el) => {
         const a = el.dataset.garea;
-        g.lights = a ? this._lights().filter((l) => l.area === a && !l.isGroup).map((l) => l.eid) : [];
+        if (!a) g.lights = [];
+        else {
+          const ids = this._lights().filter((l) => l.area === a && !l.isGroup).map((l) => l.eid);
+          const allIn = ids.every((e) => g.lights.includes(e));
+          g.lights = allIn ? g.lights.filter((e) => !ids.includes(e)) : [...new Set([...g.lights, ...ids])];
+        }
         this._render();
       });
       r.querySelectorAll('[data-gp]').forEach((el) =>
