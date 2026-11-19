@@ -29,6 +29,7 @@ Abgespielt wird ausschließlich von Home Assistant selbst. Jeder Abschnitt der Z
 - Endlosschleife (nahtlos), Einblenden, Ende-Verhalten: vorherigen Zustand wiederherstellen, halten, ausblenden, Szene
 - Gesamthelligkeit live regelbar – ohne Sprung (Restzeit wird neu berechnet)
 - Durchgehender **Abspiel-Strich** mit Zeitanzeige
+- **Immer nur ein Ablauf**: Ein Start beendet laufende andere Abläufe und stellt deren Ausgangszustand wieder her
 - **Start / Pause / Weiter**: Pause hält die Lampen, wie sie gerade sind; „Weiter“ macht an derselben Stelle der Zeitleiste weiter
 - Vorlagen (Auswahlliste „＋ Vorlage …“, alle wiederholen sich spätestens nach 60 s):
   - **☁ Ambient Drift** – ruhiges, zeitversetztes Gleiten zwischen hell/kühler und dunkel/wärmer

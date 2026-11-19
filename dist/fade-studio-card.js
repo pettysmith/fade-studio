@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.7.0';
+const FS_VERSION = '0.7.1';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
@@ -432,6 +432,37 @@ function buildScript(show, settings = DEFAULT_SETTINGS, play = null) {
       then: [...endActions(show, snap, lights), { stop: 'Beendet' }],
     },
   ];
+  // Immer nur ein Ablauf: laufende andere Abläufe beenden und ihren Ausgangszustand wiederherstellen,
+  // sonst steuern zwei Abläufe dieselben Lampen gegeneinander.
+  seq.push(
+    {
+      variables: {
+        fs_others: `{{ states.script | selectattr('object_id', 'search', '^${PREFIX}') | rejectattr('entity_id', 'eq', 'script.${id}') | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}`,
+      },
+    },
+    {
+      if: tpl('{{ fs_others | count > 0 }}'),
+      then: [
+        { action: 'script.turn_off', target: { entity_id: '{{ fs_others }}' } },
+        {
+          repeat: {
+            for_each: '{{ fs_others }}',
+            sequence: [
+              { variables: { fs_snap: `{{ 'scene.' ~ repeat.item.split('.')[1] ~ '${SNAP_SUFFIX}' }}` } },
+              {
+                if: tpl("{{ state_attr(fs_snap, 'entity_id') is not none }}"),
+                then: [
+                  { action: 'scene.turn_on', target: { entity_id: '{{ fs_snap }}' }, data: { transition: 1 } },
+                  { action: 'scene.delete', target: { entity_id: '{{ fs_snap }}' }, continue_on_error: true },
+                ],
+              },
+            ],
+          },
+        },
+        { delay: 1.5 },
+      ],
+    }
+  );
   // Zustand vor dem Start immer merken – für „vorherigen Zustand wiederherstellen",
   // für den Auto-Stopp und damit „Alles entfernen" sauber zurücksetzen kann.
   // Ein vorhandener Schnappschuss bleibt (Neustart während des Laufs). Veraltete räumt die Auto-Stopp-Automation weg.
