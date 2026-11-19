@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.7.2';
+const FS_VERSION = '0.7.3';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
@@ -780,7 +780,7 @@ const TEMPLATES = {
   drift: {
     name: 'Ambient Drift',
     desc: 'Jede Lampe gleitet ruhig und zeitversetzt zwischen hell (etwas kühler) und dunkel (wärmer). Benachbarte Lampen sind nie gleich – wie ziehende Wolken.',
-    defaults: { cycle: 30, steps: 6, kMin: 2200, kMax: 3400, bMin: 15, bMax: 70, tint: false },
+    defaults: { cycle: 20, steps: 6, kMin: 2200, kMax: 4000, bMin: 5, bMax: 100, tint: false },
     params: [
       num('cycle', 'Zykluslänge', 's', 10, 60, 5),
       num('steps', 'Wechsel pro Zyklus', '', 2, 20, 2),
@@ -799,7 +799,7 @@ const TEMPLATES = {
   candle: {
     name: 'Candle Glow',
     desc: 'Sehr warmes Licht, das unregelmäßig und weich auf- und abschwillt – jede Lampe für sich, wie Kerzen im Raum. Ruhig, gut fürs Schlafzimmer und den Abend in der ganzen Wohnung.',
-    defaults: { length: 24, speed: 4, base: 45, depth: 30, k: 2200 },
+    defaults: { length: 20, speed: 2.5, base: 70, depth: 60, k: 2200 },
     params: [
       num('length', 'Länge', 's', 10, 60, 5),
       num('speed', 'Wechsel etwa alle', 's', 2, 15, 0.5),
@@ -812,7 +812,7 @@ const TEMPLATES = {
   breathe: {
     name: 'Breathe',
     desc: 'Alle Lampen werden sanft heller und dunkler, ohne ihre Farbe zu ändern. Mit „Versatz je Raum" läuft das Atmen als Welle durch die Wohnung.',
-    defaults: { period: 10, depth: 30, base: 70, wave: 2 },
+    defaults: { period: 6, depth: 70, base: 100, wave: 1.5 },
     params: [
       num('period', 'Atemzug', 's', 2, 60),
       num('depth', 'Tiefe', '%', 5, 90),
@@ -824,21 +824,21 @@ const TEMPLATES = {
   dusk: {
     name: 'Dusk',
     desc: 'Abendrot: Die Farblampen ziehen langsam und versetzt durch Bernstein, Koralle, Rosé und Violett. Alle Weiß-Lampen bleiben gedämpft in sehr warmem Licht.',
-    defaults: { change: 8, hi: 70, lo: 40, white: 25 },
+    defaults: { change: 5, hi: 100, lo: 30, white: 20 },
     params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Weiß-Lampen', '%', 0, 100)],
     build: (hass, eids, p, ctx) => genPalette(hass, eids, p, ctx, DUSK, 2200),
   },
   aurora: {
     name: 'Aurora',
     desc: 'Polarlicht: Die Farblampen gleiten versetzt durch Türkis, Grün, Blau und Violett. Weiß-Lampen leuchten schwach in kühlem Weiß – ein kühler Kontrast zu Dusk.',
-    defaults: { change: 8, hi: 75, lo: 35, white: 15 },
+    defaults: { change: 5, hi: 100, lo: 30, white: 15 },
     params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Weiß-Lampen', '%', 0, 100)],
     build: (hass, eids, p, ctx) => genPalette(hass, eids, p, ctx, AURORA, 4000),
   },
   accent: {
     name: 'Color Accent',
     desc: 'Pro Raum leuchtet eine Farblampe kräftig und wechselt zügig die Farbe, abwechselnd hell und gedämpft. Alle anderen Lampen im Raum bleiben ruhig in gedimmtem Warmweiß.',
-    defaults: { palette: 'sunset', change: 8, hi: 90, lo: 35, calm: 25 },
+    defaults: { palette: 'sunset', change: 4, hi: 100, lo: 25, calm: 20 },
     params: [
       { k: 'palette', select: Object.fromEntries(Object.entries(PALETTES).map(([k, v]) => [k, v.name])), label: 'Farben' },
       num('change', 'Farbwechsel alle', 's', 2, 15),
@@ -851,21 +851,21 @@ const TEMPLATES = {
   seesaw: {
     name: 'Seesaw',
     desc: 'Wippe: Die Lampen werden in zwei Hälften geteilt (bei mehreren Räumen raumweise, sonst abwechselnd). Eine Hälfte wird hell, während die andere dunkel wird – deutlicher Kontrast, Farben bleiben.',
-    defaults: { period: 8, hi: 85, lo: 15 },
+    defaults: { period: 4, hi: 100, lo: 5 },
     params: [num('period', 'Ein Hin und Her', 's', 2, 60), num('hi', 'Hell', '%', 1, 100), num('lo', 'Dunkel', '%', 0, 100)],
     build: (hass, eids, p) => ({ tracks: genSeesaw(hass, eids, p), length: clamp(p.period, 2, MAX_LEN) }),
   },
   ripple: {
     name: 'Ripple',
     desc: 'Ein heller Lichtimpuls wandert nacheinander über die gewählten Lampen (nach Raum sortiert) – flotter Takt, starker Hell-Dunkel-Kontrast. Die Farben bleiben, wie sie sind.',
-    defaults: { step: 2, hi: 90, lo: 8 },
+    defaults: { step: 1.5, hi: 100, lo: 5 },
     params: [num('step', 'Takt je Lampe', 's', 1, 20, 0.5), num('hi', 'Impuls', '%', 1, 100), num('lo', 'Pause', '%', 0, 100)],
     build: (hass, eids, p) => genPulseRun(hass, eids, p, false),
   },
   twinkle: {
     name: 'Twinkle',
     desc: 'Funkeln: Mal hier, mal dort leuchtet eine Lampe kurz auf – in zufälliger Reihenfolge, die anderen bleiben gedimmt. Lebendiger als Ripple, Farben bleiben.',
-    defaults: { step: 2.5, hi: 80, lo: 20 },
+    defaults: { step: 2, hi: 100, lo: 10 },
     params: [num('step', 'Abstand der Funken', 's', 1, 20, 0.5), num('hi', 'Funke', '%', 1, 100), num('lo', 'Grundlicht', '%', 0, 100)],
     build: (hass, eids, p) => genPulseRun(hass, eids, p, true),
   },
@@ -1111,6 +1111,67 @@ class FadeStudioCard extends HTMLElement {
   }
 
   /** Laufenden Ablauf sofort anhalten und – falls er lief – die Lampen auf den Stand vor dem Start setzen. */
+  /** Lampentest: kräftiger Wechsel dunkel/warm -> hell/kühl, misst die Reaktion und liest Fehler des letzten Laufs. */
+  async _diagnose() {
+    const h = () => this._hass;
+    const lamps = [...new Set(playTracks(h(), this._show).map((t) => t.entity))];
+    if (!lamps.length) return this._setMsg('Der aktuelle Ablauf hat keine Lampen.');
+    SESSION.diag = { running: true, rows: [], trace: '' };
+    this._render();
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const read = (e) => {
+      const st = h().states[e];
+      const a = st?.attributes || {};
+      return { on: st?.state, b: a.brightness ?? 0, k: a.color_temp_kelvin, xy: a.xy_color, mode: a.color_mode };
+    };
+    // Laufende Abläufe anhalten, Zustand merken
+    const running = this._showIds().filter((e) => h_on(h(), e));
+    if (running.length) await h().callService('script', 'turn_off', { entity_id: running });
+    await h().callService('scene', 'create', { scene_id: 'fade_studio_diag_before', snapshot_entities: lamps });
+    const info = Object.fromEntries(lamps.map((e) => [e, lightInfo(h(), e)]));
+    const set = (b, warm, tr) =>
+      Promise.all(
+        lamps.map((e) => {
+          const i = info[e];
+          const d = { entity_id: e, brightness_pct: b, transition: tr };
+          if (i.ct) d.color_temp_kelvin = warm ? i.minK : i.maxK;
+          return h().callService('light', 'turn_on', d).catch((err) => (SESSION.diag.err = String(err?.message || err)));
+        })
+      );
+    await set(5, true, 0);
+    await sleep(2500);
+    const r1 = Object.fromEntries(lamps.map((e) => [e, read(e)]));
+    await set(100, false, 2);
+    await sleep(3500);
+    const r2 = Object.fromEntries(lamps.map((e) => [e, read(e)]));
+    await h().callService('scene', 'turn_on', { entity_id: 'scene.fade_studio_diag_before', transition: 1 }).catch(() => {});
+    await h().callService('scene', 'delete', { entity_id: 'scene.fade_studio_diag_before' }).catch(() => {});
+    SESSION.diag.rows = lamps.map((e) => {
+      const i = info[e];
+      const a = r1[e];
+      const b = r2[e];
+      const bri = b.b - a.b > 120 ? 'ja' : b.b - a.b > 20 ? 'schwach' : 'nein';
+      const tone = !i.ct ? '–' : a.k && b.k && b.k - a.k > 500 ? 'ja' : 'nein';
+      const plat = h().entities?.[e]?.platform || '?';
+      return { name: i.name, plat, bri, tone, detail: `${Math.round((a.b / 255) * 100)} → ${Math.round((b.b / 255) * 100)} %${i.ct ? ` · ${a.k ?? '?'} → ${b.k ?? '?'} K` : ''}` };
+    });
+    if (this._show.id) {
+      try {
+        const tl = await h().callWS({ type: 'trace/list', domain: 'script', item_id: this._show.id });
+        const last = tl[tl.length - 1];
+        SESSION.diag.trace = !last
+          ? 'Noch kein Lauf dieses Ablaufs.'
+          : last.error
+            ? `Letzter Lauf mit Fehler: ${last.error}`
+            : `Letzter Lauf: ${last.state === 'running' ? 'läuft' : 'ohne Fehler'}${last.script_execution ? ` (${last.script_execution})` : ''}.`;
+      } catch (e) {
+        SESSION.diag.trace = '';
+      }
+    }
+    SESSION.diag.running = false;
+    this._render();
+  }
+
   async _stopAndRestore(id) {
     const h = this._hass;
     const se = 'script.' + id;
@@ -1761,6 +1822,15 @@ class FadeStudioCard extends HTMLElement {
       <div class="sec2"><span class="lbl">Automatisch stoppen</span></div>
       <div class="opt"><span>Niemand mehr zu Hause<small>Danach:</small>${sel('stAwayAction', [['off', 'Lampen ausschalten'], ['restore', 'Vorher-Zustand'], ['keep', 'So lassen']], st.away_action)}</span><input type="checkbox" class="sw" id="stAway" ${st.stop_away ? 'checked' : ''}></div>
       <div class="opt"><span>Lampe von außen ausgeschaltet<small>Schalter, App, Sprachbefehl. Danach:</small>${sel('stOffAction', [['all', 'Alle Lampen des Ablaufs aus'], ['keep', 'Übrige so lassen']], st.off_action === 'keep' ? 'keep' : 'all')}</span><input type="checkbox" class="sw" id="stOff" ${st.stop_external_off ? 'checked' : ''}></div>
+      <div class="sec2"><span class="lbl">Diagnose</span></div>
+      <div class="opt"><span>Lampen dieses Ablaufs testen<small>Wechselt ca. 6 s kräftig zwischen dunkel/warm und hell/kühl, misst die Reaktion jeder Lampe und stellt danach den vorherigen Zustand wieder her.</small></span><button class="btn" id="diag" ${SESSION.diag?.running ? 'disabled' : ''}>${SESSION.diag?.running ? 'Teste …' : 'Testen'}</button></div>
+      ${
+        SESSION.diag && !SESSION.diag.running
+          ? `<table class="diag"><tr><th>Lampe</th><th>Anbindung</th><th>Helligkeit</th><th>Weißton</th><th>Werte</th></tr>${SESSION.diag.rows
+              .map((r) => `<tr><td>${esc(r.name)}</td><td class="mono">${esc(r.plat)}</td><td class="${r.bri === 'ja' ? '' : 'bad'}">${r.bri}</td><td class="${r.tone === 'nein' ? 'bad' : ''}">${r.tone}</td><td class="mono">${esc(r.detail)}</td></tr>`)
+              .join('')}</table><p class="lbl">${esc(SESSION.diag.trace || '')}${SESSION.diag.err ? ` Fehler beim Senden: ${esc(SESSION.diag.err)}` : ''}</p>`
+          : ''
+      }
       <div class="danger"><span>Alles entfernen<small>Stoppt laufende Abläufe, stellt den Zustand vor dem Start wieder her und löscht alle Abläufe, Regler, die Auto-Stopp-Automation und die Einstellungen.</small></span><button class="btn err" id="removeAll">Entfernen …</button></div>
       <div class="dfoot"><span class="lbl mono">Version ${FS_VERSION}</span><span class="grow"></span><button class="btn pri" id="stSave">Fertig</button></div>
     </div></div>`;
@@ -2147,6 +2217,7 @@ class FadeStudioCard extends HTMLElement {
     });
     if (SESSION.settingsOpen) {
       on('#removeAll', 'click', () => this._removeAll());
+      on('#diag', 'click', () => this._diagnose());
       on('#stSave', 'click', async () => {
         const g = (id) => r.querySelector(id);
         await this._saveSettings({
@@ -2418,6 +2489,10 @@ const STYLE = `
   .danger > span { display: flex; flex-direction: column; gap: 4px; }
   .danger small { color: var(--ink-2); font-size: 12px; line-height: 16px; }
   .dfoot { display: flex; align-items: center; gap: 8px; padding: 16px 0 4px; flex-wrap: wrap; }
+  .diag { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+  .diag th { text-align: left; font-weight: 400; color: var(--ink-2); font-size: 12px; padding: 4px 6px 4px 0; border-bottom: 1px solid var(--line); }
+  .diag td { padding: 6px 6px 6px 0; border-bottom: 1px solid var(--line); }
+  .diag td.bad { color: var(--acc); font-weight: 600; }
   .tpls { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; }
   .desc { margin: 4px 0 8px; }
   .genlights { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 2px 16px; max-height: 280px; overflow: auto; padding: 4px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
