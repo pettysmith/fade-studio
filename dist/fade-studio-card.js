@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.6.0';
+const FS_VERSION = '0.7.0';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
@@ -117,12 +117,6 @@ function stateAt(kfs, L, loop, t) {
   return lerpKf(last, k[0], span > 0 ? (t - last.t) / span : 0, t);
 }
 
-/** Ton in voller Leuchtkraft (Helligkeit wird separat als Kurve gezeigt). */
-function toneRgb(kf, mode) {
-  if (mode === 'color') return hexToRgb(kf.c);
-  if (mode === 'ct') return mixRgb(kelvinToRgb(kf.k), [255, 255, 255], 0.3);
-  return [255, 236, 210];
-}
 
 /* ------------------------------------------------------------------ */
 /* Lampen-Infos aus Home Assistant                                    */
@@ -749,10 +743,9 @@ const AURORA = ['#00e0c0', '#3cff7a', '#2a7bff', '#8a4dff'];
 const num = (k, label, unit, min, max, step = 1) => ({ k, label, unit, min, max, step });
 const TEMPLATES = {
   drift: {
-    icon: '☁',
     name: 'Ambient Drift',
     desc: 'Jede Lampe gleitet ruhig und zeitversetzt zwischen hell (etwas kühler) und dunkel (wärmer). Benachbarte Lampen sind nie gleich – wie ziehende Wolken.',
-    defaults: { cycle: 60, steps: 6, kMin: 2200, kMax: 3400, bMin: 15, bMax: 70, tint: false },
+    defaults: { cycle: 30, steps: 6, kMin: 2200, kMax: 3400, bMin: 15, bMax: 70, tint: false },
     params: [
       num('cycle', 'Zykluslänge', 's', 10, 60, 5),
       num('steps', 'Wechsel pro Zyklus', '', 2, 20, 2),
@@ -769,10 +762,9 @@ const TEMPLATES = {
     },
   },
   candle: {
-    icon: '🕯',
     name: 'Candle Glow',
     desc: 'Sehr warmes Licht, das unregelmäßig und weich auf- und abschwillt – jede Lampe für sich, wie Kerzen im Raum. Ruhig, gut fürs Schlafzimmer und den Abend in der ganzen Wohnung.',
-    defaults: { length: 40, speed: 4, base: 45, depth: 30, k: 2200 },
+    defaults: { length: 24, speed: 4, base: 45, depth: 30, k: 2200 },
     params: [
       num('length', 'Länge', 's', 10, 60, 5),
       num('speed', 'Wechsel etwa alle', 's', 2, 15, 0.5),
@@ -783,7 +775,6 @@ const TEMPLATES = {
     build: (hass, eids, p, ctx) => ({ tracks: genCandle(hass, eids, p, ctx), length: clamp(p.length, 10, MAX_LEN) }),
   },
   breathe: {
-    icon: '≈',
     name: 'Breathe',
     desc: 'Alle Lampen werden sanft heller und dunkler, ohne ihre Farbe zu ändern. Mit „Versatz je Raum" läuft das Atmen als Welle durch die Wohnung.',
     defaults: { period: 10, depth: 30, base: 70, wave: 2 },
@@ -796,23 +787,20 @@ const TEMPLATES = {
     build: (hass, eids, p) => ({ tracks: genBreathe(hass, eids, p), length: clamp(p.period, 2, MAX_LEN) }),
   },
   dusk: {
-    icon: '🌇',
     name: 'Dusk',
     desc: 'Abendrot: Die Farblampen ziehen langsam und versetzt durch Bernstein, Koralle, Rosé und Violett. Alle Weiß-Lampen bleiben gedämpft in sehr warmem Licht.',
-    defaults: { change: 12, hi: 70, lo: 40, white: 25 },
+    defaults: { change: 8, hi: 70, lo: 40, white: 25 },
     params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Weiß-Lampen', '%', 0, 100)],
     build: (hass, eids, p, ctx) => genPalette(hass, eids, p, ctx, DUSK, 2200),
   },
   aurora: {
-    icon: '🌌',
     name: 'Aurora',
     desc: 'Polarlicht: Die Farblampen gleiten versetzt durch Türkis, Grün, Blau und Violett. Weiß-Lampen leuchten schwach in kühlem Weiß – ein kühler Kontrast zu Dusk.',
-    defaults: { change: 12, hi: 75, lo: 35, white: 15 },
+    defaults: { change: 8, hi: 75, lo: 35, white: 15 },
     params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Weiß-Lampen', '%', 0, 100)],
     build: (hass, eids, p, ctx) => genPalette(hass, eids, p, ctx, AURORA, 4000),
   },
   accent: {
-    icon: '✦',
     name: 'Color Accent',
     desc: 'Pro Raum leuchtet eine Farblampe kräftig und wechselt zügig die Farbe, abwechselnd hell und gedämpft. Alle anderen Lampen im Raum bleiben ruhig in gedimmtem Warmweiß.',
     defaults: { palette: 'sunset', change: 8, hi: 90, lo: 35, calm: 25 },
@@ -826,7 +814,6 @@ const TEMPLATES = {
     build: (hass, eids, p, ctx) => genAccent(hass, eids, p, ctx),
   },
   seesaw: {
-    icon: '⇅',
     name: 'Seesaw',
     desc: 'Wippe: Die Lampen werden in zwei Hälften geteilt (bei mehreren Räumen raumweise, sonst abwechselnd). Eine Hälfte wird hell, während die andere dunkel wird – deutlicher Kontrast, Farben bleiben.',
     defaults: { period: 8, hi: 85, lo: 15 },
@@ -834,7 +821,6 @@ const TEMPLATES = {
     build: (hass, eids, p) => ({ tracks: genSeesaw(hass, eids, p), length: clamp(p.period, 2, MAX_LEN) }),
   },
   ripple: {
-    icon: '〰',
     name: 'Ripple',
     desc: 'Ein heller Lichtimpuls wandert nacheinander über die gewählten Lampen (nach Raum sortiert) – flotter Takt, starker Hell-Dunkel-Kontrast. Die Farben bleiben, wie sie sind.',
     defaults: { step: 2, hi: 90, lo: 8 },
@@ -842,7 +828,6 @@ const TEMPLATES = {
     build: (hass, eids, p) => genPulseRun(hass, eids, p, false),
   },
   twinkle: {
-    icon: '✧',
     name: 'Twinkle',
     desc: 'Funkeln: Mal hier, mal dort leuchtet eine Lampe kurz auf – in zufälliger Reihenfolge, die anderen bleiben gedimmt. Lebendiger als Ripple, Farben bleiben.',
     defaults: { step: 2.5, hi: 80, lo: 20 },
@@ -854,13 +839,13 @@ const TEMPLATES = {
 /* ------------------------------------------------------------------ */
 /* Die Karte                                                           */
 /* ------------------------------------------------------------------ */
-const LANE_H = 64;
+const LANE_H = 72;
 
 /*
  * Bearbeitungsstand außerhalb des Elements: Home Assistant baut Karten gelegentlich
  * neu auf (z. B. kurz nach dem Laden). Ungespeicherte Änderungen bleiben so erhalten.
  */
-const SESSION = { show: null, sel: null, dirty: false, msg: '', gen: null, settings: null, settingsOpen: false, paused: {}, playBase: {} };
+const SESSION = { show: null, sel: null, dirty: false, msg: '', gen: null, settings: null, settingsOpen: false, paused: {}, playBase: {}, lib: {}, libLoading: false, view: 'remote' };
 try {
   SESSION.paused = JSON.parse(localStorage.getItem('fade-studio-paused') || '{}') || {};
 } catch (e) {
@@ -915,7 +900,9 @@ class FadeStudioCard extends HTMLElement {
       if (!this._show) this._newShow();
       this._render();
       if (!SESSION.settings) this._loadSettings();
-      this._ro = new ResizeObserver(() => this._renderLanes());
+      this._lastWide = this._wide();
+      this._ro = new ResizeObserver(() => this._onResize());
+      this._ro.observe(this);
       this._timer = setInterval(() => this._tick(), 100);
     } else {
       this._updateStatus();
@@ -944,8 +931,7 @@ class FadeStudioCard extends HTMLElement {
     if (this._hass && !this._timer) {
       this._render();
       this._timer = setInterval(() => this._tick(), 100);
-      const tl = this.shadowRoot.querySelector('.timeline');
-      if (tl) this._ro?.observe(tl);
+      this._ro?.observe(this);
     }
   }
 
@@ -954,10 +940,10 @@ class FadeStudioCard extends HTMLElement {
     this._show = {
       id: null,
       name: 'Neuer Ablauf',
-      length: 120,
+      length: 30,
       loop: true,
-      fadeIn: 5,
-      end: { mode: 'restore', fade: 5, scene: '' },
+      fadeIn: 3,
+      end: { mode: 'restore', fade: 3, scene: '' },
       tracks: [],
     };
     this._sel = null;
@@ -1141,7 +1127,8 @@ class FadeStudioCard extends HTMLElement {
       for (let i = 0; i < 20 && !this._hass.states[`script.${s.id}`]; i++) await new Promise((r) => setTimeout(r, 300));
       await this._syncAutomation(labelId);
       this._dirty = false;
-      this._setMsg(`Gespeichert als script.${s.id}`);
+      SESSION.lib[`script.${s.id}`] = JSON.parse(JSON.stringify(s));
+      this._setMsg('Gespeichert.');
       this._render();
     } catch (e) {
       this._setMsg('Fehler beim Speichern: ' + (e.message || e.body?.message || JSON.stringify(e)));
@@ -1293,6 +1280,9 @@ class FadeStudioCard extends HTMLElement {
   }
 
   /* ---------------- Rendering ---------------- */
+  /* ================================================================== */
+  /* Oberfläche – Regeln: docs/DESIGN.md                                 */
+  /* ================================================================== */
   _setMsg(m) {
     this._msg = m;
     const el = this.shadowRoot.querySelector('#msg');
@@ -1302,20 +1292,6 @@ class FadeStudioCard extends HTMLElement {
   _running() {
     const e = this._scriptEid();
     return !!e && this._hass.states[e]?.state === 'on';
-  }
-
-  _updateStatus() {
-    const root = this.shadowRoot;
-    const st = root.querySelector('#status');
-    const run = this._running();
-    const pz = this._paused();
-    if (st) st.textContent = run ? '● läuft' : pz != null ? `⏸ pausiert bei ${fmtTime(pz)}` : '○ gestoppt';
-    st?.classList.toggle('on', run);
-    const pb = root.querySelector('#play');
-    if (pb) pb.textContent = this._playLabel();
-    const dim = root.querySelector('#dimmer');
-    const d = this._hass.states[`input_number.${this._show.id}_dimmer`];
-    if (dim && d && root.activeElement !== dim) dim.value = d.state;
   }
 
   /** Aktuelle Position im laufenden Ablauf (Sekunden) oder null. Während des Einblendens: 0. */
@@ -1337,309 +1313,413 @@ class FadeStudioCard extends HTMLElement {
     return s.loop ? t % s.length : Math.min(t, s.length);
   }
 
-  _tick() {
-    const r = this.shadowRoot;
-    const ph = r.querySelector('#ph');
-    if (!ph) return;
-    const t = this._playTime();
-    const ruler = r.querySelector('.rulerlane');
-    if (t === null || !ruler) {
-      ph.style.display = 'none';
-      return;
+  _wide() {
+    return (this.clientWidth || 1200) >= 860;
+  }
+  /** Breit = Studio. Schmal = Fernbedienung (Studio auf Wunsch über den Stift). */
+  _mode() {
+    return this._wide() || SESSION.view === 'studio' ? 'studio' : 'remote';
+  }
+  _onResize() {
+    const w = this._wide();
+    if (w !== this._lastWide) {
+      this._lastWide = w;
+      this._render();
+    } else this._renderLanes();
+  }
+
+  async _loadLib() {
+    if (SESSION.libLoading) return;
+    SESSION.libLoading = true;
+    for (const eid of this._showIds()) {
+      if (eid in SESSION.lib) continue;
+      try {
+        const cfg = await this._hass.callApi('GET', `config/script/config/${eid.replace('script.', '')}`);
+        const sh = cfg?.variables?.fade_studio?.show;
+        SESSION.lib[eid] = sh || null;
+      } catch (e) {
+        SESSION.lib[eid] = null; // nicht erneut versuchen
+      }
     }
-    const tl = r.querySelector('.timeline').getBoundingClientRect();
-    const rr = ruler.getBoundingClientRect();
-    const lanes = r.querySelectorAll('.lane[data-lane]');
-    const bottom = lanes.length ? lanes[lanes.length - 1].getBoundingClientRect().bottom : rr.bottom;
-    ph.style.display = 'block';
-    ph.style.left = `${rr.left - tl.left + (t / this._show.length) * rr.width}px`;
-    ph.style.top = `${rr.top - tl.top}px`;
-    ph.style.height = `${bottom - rr.top}px`;
-    r.querySelector('#phT').textContent = fmtTime(t);
+    SESSION.libLoading = false;
+    this._render();
   }
 
-  _laneW() {
-    const lane = this.shadowRoot.querySelector('.lane');
-    return Math.max(100, lane?.clientWidth || 600);
+  async _playShow(eid) {
+    if (this._scriptEid() !== eid) {
+      if (this._dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) return;
+      await this._loadShow(eid);
+    }
+    this._play();
   }
 
+  /* ---------- kleine Bausteine ---------- */
+  _ic(name) {
+    return `<ha-icon icon="mdi:${name}"></ha-icon>`;
+  }
+
+  _showMeta(sh) {
+    const play = playTracks(this._hass, sh);
+    const areas = [...new Set(play.map((t) => lightInfo(this._hass, t.entity).area).filter(Boolean))];
+    const where = areas.length === 0 ? '' : areas.length <= 2 ? areas.join(', ') : `${areas.length} Räume`;
+    return [where, `${play.length} ${play.length === 1 ? 'Lampe' : 'Lampen'}`, `${r1(sh.length)} s`].filter(Boolean).join(' · ');
+  }
+
+  /** Pegelbalken eines ganzen Ablaufs: Farbe = Ton der hellsten Spur, Höhe = mittlere Helligkeit. */
+  _bars(sh, n = 30) {
+    const tr = (sh.tracks || []).filter((t) => t.entity);
+    if (!tr.length) return Array.from({ length: n }, () => '<i style="height:6%;background:var(--gap)"></i>').join('');
+    let out = '';
+    for (let i = 0; i < n; i++) {
+      const t = ((i + 0.5) * sh.length) / n;
+      const st = tr.map((x) => ({ kf: stateAt(x.kfs, sh.length, sh.loop, t), mode: x.mode }));
+      const b = st.reduce((a, x) => a + x.kf.b, 0) / st.length;
+      const top = st.reduce((a, x) => (x.kf.b > a.kf.b ? x : a), st[0]);
+      out += `<i style="height:${Math.max(6, Math.round(b))}%;background:${toneCss(top.kf, top.mode)}"></i>`;
+    }
+    return out;
+  }
+
+  _status() {
+    if (!this._show.id) return 'Noch nicht gespeichert';
+    if (this._running()) return this._show.loop ? 'Läuft · Schleife' : 'Läuft';
+    const pz = this._paused();
+    return pz != null ? `Pausiert bei ${r1(pz).toFixed(1)} s` : 'Gestoppt';
+  }
+
+  /* ---------- Rendern ---------- */
   _render() {
-    const s = this._show;
     const h = this._hass;
-    const ids = this._showIds();
-    const lights = this._lights();
-    const scenes = Object.keys(h.states).filter((e) => e.startsWith('scene.') && !e.endsWith(SNAP_SUFFIX));
-    const dimmer = s.id ? h.states[`input_number.${s.id}_dimmer`] : null;
-    const sel = this._sel && this._ref(this._sel.ti, this._sel.m)?.kfs[this._sel.ki] ? this._sel : null;
-    const lightOpts = (selected) =>
-      lights
-        .map(
-          (l) =>
-            `<option value="${l.eid}" ${l.eid === selected ? 'selected' : ''}>${esc(l.area ? l.area + ' · ' : '')}${esc(l.name)}${l.isGroup ? ' (Gruppe)' : ''}</option>`
-        )
-        .join('');
-
-    this.shadowRoot.innerHTML = `
-      <style>${STYLE}</style>
-      <ha-card>
-        <div class="bar">
-          <span class="title">Fade Studio</span>
-          <select id="showSel">
-            <option value="">＋ Neuer Ablauf</option>
-            ${ids.map((e) => `<option value="${e}" ${e === this._scriptEid() ? 'selected' : ''}>${esc(h.states[e].attributes.friendly_name?.replace(/^Fade Studio: /, '') || e)}</option>`).join('')}
-          </select>
-          <span class="grow"></span>
-          <select id="genSel" title="Vorlage wählen – erzeugt Spuren für die gewählten Lampen">
-            <option value="">＋ Vorlage …</option>
-            ${Object.entries(TEMPLATES)
-              .map(([k, t]) => `<option value="${k}">${t.icon} ${esc(t.name)}</option>`)
-              .join('')}
-          </select>
-          <button id="settings" class="icon gear" title="Einstellungen">⚙</button>
-        </div>
-
-        <div class="props">
-          <label>Name <input id="name" value="${esc(s.name)}"></label>
-          <label>Länge <input id="length" type="number" min="5" step="1" value="${s.length}"> s</label>
-          <label class="chk"><input id="loop" type="checkbox" ${s.loop ? 'checked' : ''}> Endlos wiederholen</label>
-          <label>Einblenden <input id="fadeIn" type="number" min="1" step="1" value="${s.fadeIn}"> s</label>
-          <label>Am Ende / beim Stoppen
-            <select id="endMode">
-              ${[
-                ['restore', 'vorherigen Zustand wiederherstellen'],
-                ['hold', 'letzten Zustand halten'],
-                ['off', 'ausblenden (aus)'],
-                ['scene', 'Szene aktivieren'],
-              ]
-                .map(([v, t]) => `<option value="${v}" ${s.end.mode === v ? 'selected' : ''}>${t}</option>`)
-                .join('')}
-            </select>
-          </label>
-          ${
-            s.end.mode === 'scene'
-              ? `<label>Szene <select id="endScene"><option value="">–</option>${scenes
-                  .map((e) => `<option value="${e}" ${e === s.end.scene ? 'selected' : ''}>${esc(h.states[e].attributes.friendly_name || e)}</option>`)
-                  .join('')}</select></label>`
-              : ''
-          }
-          ${s.end.mode !== 'hold' ? `<label>Übergang <input id="endFade" type="number" min="0" step="1" value="${s.end.fade}"> s</label>` : ''}
-        </div>
-
-        <div class="transport">
-          <button id="play" class="primary" ${s.id ? '' : 'disabled'}>${s.id ? this._playLabel() : '▶ Start'}</button>
-          <button id="stop" ${s.id ? '' : 'disabled'}>■ Sanft stoppen</button>
-          <span id="status" class="status">○ gestoppt</span>
-          <span class="grow"></span>
-          ${
-            dimmer
-              ? `<label class="dim">Gesamthelligkeit <input id="dimmer" type="range" min="0" max="100" step="1" value="${dimmer.state}"></label>`
-              : `<span class="hint">Gesamthelligkeit erscheint nach dem Speichern</span>`
-          }
-        </div>
-
-        <div class="timeline">
-          <div id="ph" class="phline"><span id="phT" class="phtime"></span></div>
-          <div class="row ruler"><div class="lab"></div><div class="lane rulerlane">${this._rulerHtml()}</div></div>
-          ${s.tracks.map((tr, ti) => this._trackRowsHtml(tr, ti)).join('')}
-          ${s.tracks.length ? '' : `<div class="empty">Noch keine Spuren. Füge unten eine Lampe hinzu – oder starte oben mit einer Vorlage.</div>`}
-          <div class="row add">
-            <div class="lab"><select id="addSel">${lightOpts('')}</select></div>
-            <div><button id="addTrack">＋ Spur hinzufügen</button> <span class="hint">Klick in eine Spur setzt einen Punkt · Punkte lassen sich ziehen</span></div>
-          </div>
-        </div>
-
-        ${sel ? this._kfEditorHtml(sel) : ''}
-
-        <div class="foot">
-          <button id="save" class="primary">${this._dirty ? '● ' : ''}Speichern</button>
-          <button id="delete">${s.id ? 'Ablauf löschen' : 'Verwerfen'}</button>
-          <span id="msg" class="msg">${esc(this._msg)}</span>
-        </div>
-        ${this._gen ? this._genHtml(lights) : ''}
+    const dark = h.themes?.darkMode !== false;
+    const mode = this._mode();
+    this.shadowRoot.innerHTML = `<style>${STYLE}</style>
+      <ha-card class="fs ${dark ? 'dark' : 'light'} m-${mode} ${this._wide() ? 'wide' : 'narrow'}">
+        ${mode === 'studio' ? this._studioHtml() : this._remoteHtml()}
+        ${this._gen ? this._genHtml() : ''}
         ${SESSION.settingsOpen ? this._settingsHtml() : ''}
       </ha-card>`;
     this._bind();
     this._renderLanes();
     this._updateStatus();
-    // Breite steht erst nach dem Layout fest -> Spuren neu zeichnen, wenn sich die Zeitleiste ändert.
-    this._ro?.disconnect();
-    const tl = this.shadowRoot.querySelector('.timeline');
-    if (tl) this._ro?.observe(tl);
     requestAnimationFrame(() => this._renderLanes());
+    if (!SESSION.libLoading && this._showIds().some((e) => !(e in SESSION.lib))) this._loadLib();
+  }
+
+  _libHtml() {
+    const ids = this._showIds();
+    return `<aside class="lib">
+      <div class="hd"><span class="title">Fade Studio</span><button class="ib" id="settings" title="Einstellungen">${this._ic('tune-variant')}</button></div>
+      <div class="items">
+        ${ids
+          .map((eid) => {
+            const sh = SESSION.lib[eid];
+            const run = h_on(this._hass, eid);
+            const name = this._hass.states[eid]?.attributes?.friendly_name?.replace(/^Fade Studio: /, '') || eid;
+            return `<button class="item ${eid === this._scriptEid() ? 'sel' : ''}" data-show="${eid}">
+              <span class="nm">${esc(name)}</span>${run ? '<span class="run"><i class="led"></i>läuft</span>' : '<span></span>'}
+              <span class="lbl">${sh ? esc(this._showMeta(sh)) : '…'}</span><span></span>
+              <span class="disp bars">${sh ? this._bars(sh) : ''}</span>
+            </button>`;
+          })
+          .join('')}
+        ${ids.length ? '' : '<div class="empty lbl">Noch keine Abläufe.</div>'}
+      </div>
+      <div class="ft"><button class="btn" id="newShow">${this._ic('plus')}Neu</button><button class="btn" id="openGen">${this._ic('plus')}Vorlage</button></div>
+    </aside>`;
+  }
+
+  _studioHtml() {
+    const s = this._show;
+    const h = this._hass;
+    const dimmer = s.id ? h.states[`input_number.${s.id}_dimmer`] : null;
+    const scenes = Object.keys(h.states).filter((e) => e.startsWith('scene.') && !e.endsWith(SNAP_SUFFIX));
+    const lights = this._lights();
+    const nPlay = playTracks(h, s).length;
+    const back = !this._wide() ? `<div class="hd"><button class="ib" id="toRemote" title="Zur Fernbedienung">${this._ic('arrow-left')}</button><span class="title">${esc(s.name)}</span><button class="ib" id="settings" title="Einstellungen">${this._ic('tune-variant')}</button></div>` : '';
+    return `<div class="studio">
+      ${this._wide() ? this._libHtml() : ''}
+      <section class="main">
+        ${back}
+        <div class="transport">
+          <div class="keys">
+            <button class="key" id="play" ${s.id ? '' : 'disabled'}></button>
+            <button class="key" id="stop" ${s.id ? '' : 'disabled'} title="Sanft stoppen – mit dem eingestellten Ende">${this._ic('stop')}</button>
+          </div>
+          <div class="clock"><div class="t mono"><span id="clk">0.0</span><span class="tot">/ ${r1(s.length)} s</span></div><div class="lbl" id="status"></div></div>
+          <span></span>
+          <div class="master" title="Dimmt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis – auch während er läuft">
+            ${
+              dimmer
+                ? `<span class="lbl">Helligkeit gesamt</span><input type="range" class="rng" id="dimmer" min="0" max="100" step="1" value="${dimmer.state}"><span class="mono val" id="dimv">${Math.round(dimmer.state)} %</span>`
+                : '<span class="lbl">Helligkeit gesamt – nach dem Speichern</span>'
+            }
+          </div>
+        </div>
+
+        <div class="params">
+          <div class="cell"><span class="lbl">Länge</span><span class="chips">${[15, 30, 45, 60]
+            .map((v) => `<button class="chip mono ${s.length === v ? 'on' : ''}" data-len="${v}">${v}</button>`)
+            .join('')}<input class="fld mono num" id="length" type="number" min="2" max="600" step="1" value="${r1(s.length)}" title="Länge in Sekunden"></span></div>
+          <div class="cell"><span class="lbl">Schleife</span><input type="checkbox" class="sw" id="loop" ${s.loop ? 'checked' : ''}></div>
+          <div class="cell"><span class="lbl">Einblenden</span><span class="v"><input class="fld mono num" id="fadeIn" type="number" min="1" step="1" value="${s.fadeIn}"><span class="u">s</span></span></div>
+          <div class="cell"><span class="lbl">Am Ende</span>
+            <select class="fld" id="endMode">${[
+              ['restore', 'Vorher-Zustand'],
+              ['hold', 'So lassen'],
+              ['off', 'Ausschalten'],
+              ['scene', 'Szene'],
+            ]
+              .map(([v, t]) => `<option value="${v}" ${s.end.mode === v ? 'selected' : ''}>${t}</option>`)
+              .join('')}</select>
+            ${
+              s.end.mode === 'scene'
+                ? `<select class="fld" id="endScene"><option value="">Szene wählen</option>${scenes
+                    .map((e) => `<option value="${e}" ${e === s.end.scene ? 'selected' : ''}>${esc(h.states[e].attributes.friendly_name || e)}</option>`)
+                    .join('')}</select>`
+                : ''
+            }
+          </div>
+          <div class="cell"><span class="lbl">Übergang</span><span class="v"><input class="fld mono num" id="endFade" type="number" min="0" step="1" value="${s.end.fade}" ${s.end.mode === 'hold' ? 'disabled' : ''}><span class="u">s</span></span></div>
+          <div class="cell"><span class="lbl">Name</span><input class="fld name" id="name" value="${esc(s.name)}"></div>
+        </div>
+
+        <div class="tl" id="tl">
+          <div class="row ruler"><div class="th"><span class="slbl">Spuren · ${nPlay}</span></div><div class="ln"><div class="rulerlane" id="ruler">${this._rulerHtml()}</div></div></div>
+          ${s.tracks.map((tr, ti) => this._trackRowsHtml(tr, ti)).join('')}
+          <div class="addrow">
+            <select class="fld" id="addSel">${lights
+              .map((l) => `<option value="${l.eid}">${esc(l.area ? l.area + ' · ' : '')}${esc(l.name)}${l.isGroup ? ' (Gruppe)' : ''}</option>`)
+              .join('')}</select>
+            <button class="btn" id="addTrack">${this._ic('plus')}Spur</button>
+          </div>
+          <div class="playhead" id="ph" title="Aktuelle Position der Wiedergabe"><b class="mono" id="phT"></b></div>
+          <div class="guide" id="guide" title="Zeit des ausgewählten Punkts"><b class="mono" id="guideT"></b></div>
+        </div>
+
+        ${this._inspHtml()}
+
+        <div class="foot">
+          ${s.id ? `<button class="btn txt muted" id="delete" title="Diesen Ablauf mit Skript und Regler löschen">Ablauf löschen</button>` : ''}
+          <span class="lbl" id="msg">${esc(this._msg)}</span>
+          <span class="grow"></span>
+          <button class="btn txt" id="discard" ${this._dirty ? '' : 'disabled'} title="Ungespeicherte Änderungen zurücknehmen">Verwerfen</button>
+          <button class="btn pri" id="save" title="Ablauf in Home Assistant speichern – erst dann spielt er so">${this._dirty ? 'Speichern •' : 'Speichern'}</button>
+        </div>
+      </section>
+    </div>`;
+  }
+
+  _rulerHtml() {
+    const L = this._show.length;
+    const minor = L <= 30 ? 0.5 : L <= 90 ? 1 : 5;
+    const major = L <= 90 ? 5 : L <= 300 ? 30 : 60;
+    let out = '';
+    for (let t = 0; t <= L + 0.001; t += minor) {
+      const tt = r1(t);
+      const M = Math.abs(tt / major - Math.round(tt / major)) < 0.001;
+      const S = Number.isInteger(tt);
+      out += `<i class="tick ${M ? 'M' : S ? 'S' : ''}" style="left:${(tt / L) * 100}%"></i>`;
+      if (M) {
+        const last = Math.abs(tt - L) < 0.001;
+        out += `<span class="tlab mono" style="left:${(tt / L) * 100}%;${tt === 0 ? 'transform:none' : last ? 'transform:translateX(-100%)' : ''}">${last ? `${tt} s` : tt}</span>`;
+      }
+    }
+    return out;
   }
 
   _trackRowsHtml(tr, ti) {
     const h = this._hass;
     const info = lightInfo(h, tr.entity);
-    const modeSel = (ref, inf, m) => {
-      const modes = [
-        inf.ct || inf.color ? ['ct', 'Weißton'] : null,
-        inf.color ? ['color', 'Farbe'] : null,
-        ['bri', 'nur Helligkeit'],
-      ].filter(Boolean);
+    const seg = (ref, inf, m) => {
       const md = m ? ` data-member="${m}"` : '';
-      return `<select data-mode="${ti}"${md}>${modes.map(([v, t]) => `<option value="${v}" ${ref.mode === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
-        ${ref.mode !== 'bri' ? `<label class="chk small" title="Pro Abschnitt erst den Ton, dann die Helligkeit überblenden. Hilft bei Lampen (oft IKEA), die beides nicht gleichzeitig können."><input type="checkbox" data-split="${ti}"${md} ${ref.split ? 'checked' : ''}>nacheinander</label>` : ''}`;
+      const opts = [inf.ct || inf.color ? ['ct', 'Weiß'] : null, inf.color ? ['color', 'Farbe'] : null, ['bri', 'Hell']].filter(Boolean);
+      return `<span class="seg">${opts
+        .map(([v, t]) => `<button class="${ref.mode === v ? 'on' : ''}" data-mode="${ti}" data-val="${v}"${md} title="${v === 'ct' ? 'Weißtöne' : v === 'color' ? 'Farben' : 'Nur Helligkeit, Ton bleibt'}">${t}</button>`)
+        .join('')}</span>`;
     };
-    const badge = (inf) => (inf.ikea ? ' <span class="badge" title="Als IKEA-Lampe erkannt">IKEA</span>' : '');
+    const ikea = (ref, inf, m) =>
+      inf.ikea && ref.mode !== 'bri'
+        ? `<button class="tag ${ref.split ? 'on' : ''}" data-split="${ti}"${m ? ` data-member="${m}"` : ''} title="IKEA erkannt. Aktiv: erst Ton, dann Helligkeit überblenden">IKEA</button>`
+        : '';
     const members = info.members;
     const isGroup = members.length > 0;
-    const own = Object.keys(tr.members || {}).filter((m) => members.includes(m));
-    let out = `<div class="row" data-ti="${ti}">
-      <div class="lab">
-        <div class="lname" title="${esc(tr.entity)}">
-          ${isGroup ? `<button class="icon fold" data-expand="${ti}" title="${tr.expanded ? 'Einzelne Lampen ausblenden' : 'Einzelne Lampen zeigen'}">${tr.expanded ? '▾' : '▸'}</button>` : ''}
-          ${info.available ? '' : '⚠ '}${esc(info.name)}${badge(info)}
+    const selT = this._sel && this._sel.ti === ti && !this._sel.m;
+    let out = `<div class="row track ${selT ? 'sel' : ''}">
+      <div class="th">
+        <div class="nm2">
+          ${isGroup ? `<button class="ib sm" data-expand="${ti}" title="${tr.expanded ? 'Einzelne Lampen ausblenden' : 'Einzelne Lampen zeigen'}">${this._ic(tr.expanded ? 'chevron-down' : 'chevron-right')}</button>` : ''}
+          <span class="nmt" title="${esc(tr.entity)}">${info.available ? '' : '⚠ '}${esc(info.name)}</span>
+          <button class="ib sm del" data-deltrack="${ti}" title="Spur entfernen">${this._ic('close')}</button>
         </div>
-        ${isGroup ? `<div class="small hint">Gruppe · ${members.length} Lampen${own.length ? ` · ${own.length} mit eigener Spur` : ''}</div>` : ''}
-        <div class="lctl">${modeSel(tr, info)}<button class="icon" data-deltrack="${ti}" title="Spur entfernen">✕</button></div>
+        <div class="meta">${seg(tr, info)}${ikea(tr, info)}${isGroup ? `<span class="tag">Gruppe · ${members.length}</span>` : ''}</div>
       </div>
-      <div class="lane" data-lane="${ti}"></div>
+      <div class="ln"><div class="lane" data-lane="${ti}"></div></div>
     </div>`;
     if (isGroup && tr.expanded) {
       for (const m of members) {
         const mi = lightInfo(h, m);
         const ov = tr.members?.[m];
-        out += `<div class="row member">
-          <div class="lab">
-            <div class="lname" title="${esc(m)}">${mi.available ? '' : '⚠ '}${esc(mi.name)}${badge(mi)}</div>
-            <div class="lctl">${
-              ov
-                ? `${modeSel(ov, mi, m)}<button class="icon" data-reset="${ti}" data-member="${m}" title="Eigene Spur verwerfen – Lampe folgt wieder der Gruppe">↺</button>`
-                : `<span class="small hint">folgt der Gruppe · in die Spur klicken für eine eigene</span>`
-            }</div>
+        const selM = this._sel && this._sel.ti === ti && this._sel.m === m;
+        out += `<div class="row track sub ${selM ? 'sel' : ''}">
+          <div class="th">
+            <div class="nm2"><span class="nmt" title="${esc(m)}">${esc(mi.name)}</span>${ov ? `<button class="ib sm" data-reset="${ti}" data-member="${m}" title="Eigene Spur verwerfen – Lampe folgt wieder der Gruppe">${this._ic('restore')}</button>` : ''}</div>
+            <div class="meta">${ov ? `${seg(ov, mi, m)}${ikea(ov, mi, m)}<span class="tag">eigen</span>` : '<span class="slbl">folgt Gruppe · antippen für eigene Spur</span>'}</div>
           </div>
-          <div class="lane ${ov ? '' : 'ghost'}" data-lane="${ti}" data-member="${m}"></div>
+          <div class="ln"><div class="lane ${ov ? '' : 'ghost'}" data-lane="${ti}" data-member="${m}"></div></div>
         </div>`;
       }
     }
     return out;
   }
 
-  _rulerHtml() {
-    const L = this._show.length;
-    const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
-    const step = steps.find((x) => L / x <= 10) || 600;
-    let out = '';
-    for (let t = 0; t <= L + 0.001; t += step)
-      out += `<span class="tick" style="left:${(t / L) * 100}%">${fmtTime(t)}</span>`;
-    return out;
-  }
-
-  _kfEditorHtml({ ti, ki, m }) {
-    const tr = this._ref(ti, m);
-    const kf = tr.kfs[ki];
+  _inspHtml() {
+    const sel = this._sel && this._ref(this._sel.ti, this._sel.m)?.kfs[this._sel.ki] ? this._sel : null;
+    if (!sel) return `<div class="insp"><div class="cell wide"><span class="lbl">In eine Spur tippen setzt einen Punkt. Punkte antippen zum Bearbeiten, ziehen zum Verschieben.</span></div></div>`;
+    const tr = this._ref(sel.ti, sel.m);
+    const kf = tr.kfs[sel.ki];
     const info = lightInfo(this._hass, tr.entity);
-    return `<div class="kfedit">
-      <b>${esc(info.name)}</b> · Punkt ${ki + 1}
-      <label>Zeit <input id="kfT" type="number" min="0" max="${this._show.length}" step="0.5" value="${r1(kf.t)}"> s</label>
-      <label>Helligkeit <input id="kfB" type="range" min="0" max="100" step="1" value="${Math.round(kf.b)}"> <span id="kfBv">${Math.round(kf.b)} %${kf.b <= 0 ? ' (aus)' : ''}</span></label>
-      ${tr.mode === 'ct' ? `<label>Weißton <input id="kfK" class="ctrange" type="range" min="${info.minK}" max="${info.maxK}" step="10" value="${clamp(kf.k, info.minK, info.maxK)}"> <span id="kfKv">${Math.round(kf.k)} K</span></label>` : ''}
-      ${tr.mode === 'color' ? `<label>Farbe <input id="kfC" type="color" value="${kf.c}"></label>` : ''}
-      <button id="kfPreview">An Lampe zeigen</button>
-      <button id="kfAll" title="Diesen Zustand zur selben Zeit auf alle Spuren übertragen">Auf alle Spuren</button>
-      <button id="kfDel" class="danger">Punkt löschen</button>
-      <button id="kfClose" class="icon">✕</button>
+    const order = [...tr.kfs].map((k, i) => [k.t, i]).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
+    let tone = '<span class="lbl">Nur Helligkeit</span>';
+    if (tr.mode === 'ct') {
+      const ks = [...new Set([2200, 2400, 2600, 2800, 3000, 3300, 3600, 4000, 4500, 5000, 5700, 6500].map((k) => clamp(k, info.minK, info.maxK)))];
+      const near = ks.reduce((a, k) => (Math.abs(k - kf.k) < Math.abs(a - kf.k) ? k : a), ks[0]);
+      tone = `<div class="ctl"><span class="disp sw-row" style="grid-template-columns:repeat(${ks.length},1fr)">${ks
+        .map((k) => `<button class="${k === near ? 'sel' : ''}" data-k="${k}" style="background:${ktone(k)}" title="${k} K"></button>`)
+        .join('')}</span><span class="mono val">${Math.round(kf.k)} K</span></div>`;
+    } else if (tr.mode === 'color') {
+      const cs = ['#ff3b30', '#ff7a1a', '#ffb000', '#ffe14d', '#9be15d', '#2ee6a6', '#26c6da', '#2f7bff', '#5e5ce6', '#b05cff', '#ff4fa3', '#ffd2a8'];
+      tone = `<div class="ctl"><span class="disp sw-row" style="grid-template-columns:repeat(${cs.length},1fr)">${cs
+        .map((c) => `<button class="${c === kf.c ? 'sel' : ''}" data-c="${c}" style="background:${c}" title="${c}"></button>`)
+        .join('')}</span><input type="color" class="colorpick" id="kfC" value="${kf.c}" title="Eigene Farbe"></div>`;
+    }
+    return `<div class="insp">
+      <div class="cell who"><span class="lbl">Punkt ${order.indexOf(sel.ki) + 1} von ${tr.kfs.length}</span><span class="n">${esc(info.name)}</span></div>
+      <div class="cell"><span class="lbl">Zeit</span><span class="v"><input class="fld mono num" id="kfT" type="number" min="0" max="${this._show.length}" step="0.1" value="${r1(kf.t)}"><span class="u">s</span></span></div>
+      <div class="cell"><span class="lbl">Helligkeit</span><div class="ctl"><input type="range" class="rng" id="kfB" min="0" max="100" step="1" value="${Math.round(kf.b)}"><span class="mono val" id="kfBv">${Math.round(kf.b)} %</span></div></div>
+      <div class="cell grow2"><span class="lbl">${tr.mode === 'color' ? 'Farbe' : 'Weißton'}</span>${tone}</div>
+      <div class="cell acts">
+        <button class="btn" id="kfPreview" title="Zeigt diesen Zustand jetzt sofort an der Lampe">${this._ic('lightbulb-on-outline')}An Lampe zeigen</button>
+        <button class="btn" id="kfAll" title="Überträgt Helligkeit und Ton dieses Punkts zur selben Zeit auf alle anderen Spuren">${this._ic('content-copy')}Auf alle Spuren</button>
+        <button class="btn" id="kfDel" title="Diesen Punkt löschen">${this._ic('delete-outline')}Löschen</button>
+      </div>
     </div>`;
   }
 
-  _genHtml(lights) {
+  _remoteHtml() {
+    const h = this._hass;
+    const ids = this._showIds();
+    const runId = ids.find((e) => h_on(h, e));
+    const cur = runId || this._scriptEid() || ids[0];
+    // Fernbedienung zeigt immer den laufenden bzw. gewählten Ablauf – ungespeicherte Arbeit bleibt unberührt.
+    if (cur && cur !== this._scriptEid() && !this._dirty && SESSION.lib[cur]) {
+      this._show = { end: { mode: 'restore', fade: 3, scene: '' }, ...JSON.parse(JSON.stringify(SESSION.lib[cur])), id: cur.replace('script.', '') };
+      this._sel = null;
+    }
+    const sh = cur ? (cur === this._scriptEid() ? this._show : SESSION.lib[cur]) : null;
+    const dimmer = cur ? h.states[`input_number.${cur.replace('script.', '')}_dimmer`] : null;
+    const head = `<div class="hd"><span class="title">Fade Studio</span><span class="grow"></span><button class="ib" id="toStudio" title="Im Studio bearbeiten">${this._ic('pencil-outline')}</button><button class="ib" id="settings" title="Einstellungen">${this._ic('tune-variant')}</button></div>`;
+    if (!sh) return `${head}<div class="now"><div class="lbl">Noch keine Abläufe.</div><button class="btn pri" id="toStudio2">${this._ic('plus')}Im Studio anlegen</button></div>`;
+    return `${head}
+      <div class="now band">
+        <span class="lbl" id="status"></span>
+        <div class="nm">${esc(sh.name)}</div>
+        <div class="lbl">${esc(this._showMeta(sh))}</div>
+        <div class="t mono"><span id="clk">0.0</span><span class="tot">/ ${r1(sh.length)} s</span></div>
+        <div class="disp bars big">${this._bars(sh, 60)}<i class="nowph" id="nowph"></i></div>
+      </div>
+      <div class="rkeys band">
+        <button class="key" id="play" data-cur="${cur}"></button>
+        <button class="key" id="stop" title="Sanft stoppen">${this._ic('stop')}</button>
+      </div>
+      <div class="rmaster band" title="Dimmt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis – auch während er läuft">
+        <div class="top"><span class="lbl">Helligkeit gesamt</span><span class="mono" id="dimv">${dimmer ? Math.round(dimmer.state) + ' %' : '–'}</span></div>
+        <input type="range" class="rng" id="dimmer" min="0" max="100" step="1" value="${dimmer ? dimmer.state : 100}" ${dimmer ? '' : 'disabled'}>
+      </div>
+      <div class="band"><div class="sec lbl">Lampen jetzt</div><div class="lamps" id="lampsNow">${this._lampsNowHtml(sh)}</div></div>
+      <div class="rlib"><div class="sec lbl">Abläufe</div>
+        ${ids
+          .filter((e) => e !== cur)
+          .map((eid) => {
+            const o = SESSION.lib[eid];
+            const name = h.states[eid]?.attributes?.friendly_name?.replace(/^Fade Studio: /, '') || eid;
+            return `<div class="item"><button class="itemsel" data-show="${eid}"><span class="nm">${esc(name)}</span><span class="lbl">${o ? esc(this._showMeta(o)) : '…'}</span><span class="disp bars">${o ? this._bars(o) : ''}</span></button><button class="key sm" data-playshow="${eid}" title="Starten">${this._ic('play')}</button></div>`;
+          })
+          .join('')}
+      </div>`;
+  }
+
+  _lampsNowHtml(sh) {
+    return playTracks(this._hass, sh)
+      .map((t) => {
+        const st = this._hass.states[t.entity];
+        const a = st?.attributes || {};
+        const on = st?.state === 'on';
+        const b = on ? Math.round(((a.brightness ?? 255) / 255) * 100) : 0;
+        const tone = !on ? 'var(--gap)' : a.color_mode === 'color_temp' && a.color_temp_kelvin ? ktone(a.color_temp_kelvin) : a.rgb_color ? `rgb(${a.rgb_color.join(',')})` : '#efe9df';
+        const val = !on ? 'aus' : `${b} %${a.color_mode === 'color_temp' && a.color_temp_kelvin ? ` · ${Math.round(a.color_temp_kelvin / 10) * 10} K` : ''}`;
+        return `<div class="lamp"><span class="lv"><i style="background:${tone}"></i><b><i style="height:${b}%"></i></b></span><span class="n">${esc(a.friendly_name || t.entity)}</span><span class="v mono">${val}</span></div>`;
+      })
+      .join('');
+  }
+
+  _genHtml() {
     const g = this._gen;
     const T = TEMPLATES[g.type];
     const p = g.p;
+    const lights = this._lights();
     const areas = [...new Set(lights.map((l) => l.area).filter(Boolean))];
     const field = (q) => {
-      if (q.check) return `<label class="chk"><input type="checkbox" data-gp="${q.k}" ${p[q.k] ? 'checked' : ''}> ${esc(q.check)}</label>`;
+      if (q.check) return `<label class="opt"><span>${esc(q.check)}</span><input type="checkbox" class="sw" data-gp="${q.k}" ${p[q.k] ? 'checked' : ''}></label>`;
       if (q.select)
-        return `<label>${esc(q.label)} <select data-gp="${q.k}">${Object.entries(q.select)
+        return `<label class="par"><span class="lbl">${esc(q.label)}</span><select class="fld" data-gp="${q.k}">${Object.entries(q.select)
           .map(([v, t]) => `<option value="${v}" ${p[q.k] === v ? 'selected' : ''}>${esc(t)}</option>`)
           .join('')}</select></label>`;
-      return `<label>${esc(q.label)} <input data-gp="${q.k}" type="number" min="${q.min}" max="${q.max}" step="${q.step}" value="${p[q.k]}"> ${q.unit}</label>`;
+      return `<label class="par"><span class="lbl">${esc(q.label)}</span><span class="v"><input class="fld mono num" data-gp="${q.k}" type="number" min="${q.min}" max="${q.max}" step="${q.step}" value="${p[q.k]}"><span class="u">${q.unit}</span></span></label>`;
     };
-    return `<div class="overlay"><div class="dialog">
-      <div class="dhead"><h3>${T.icon} ${esc(T.name)}</h3><button id="dlgX" class="close" title="Schließen (Esc)">✕</button></div>
-      <p class="hint">${esc(T.desc)}</p>
-      <div class="genlights">
-        <div class="arearow">Raum wählen: ${areas.map((a) => `<button data-garea="${esc(a)}">${esc(a)}</button>`).join(' ')} <button data-garea="">keine</button></div>
-        ${lights
-          .map(
-            (l) =>
-              `<label class="chk"><input type="checkbox" data-gl="${l.eid}" ${g.lights.includes(l.eid) ? 'checked' : ''}>${esc(l.area ? l.area + ' · ' : '')}${esc(l.name)}${l.isGroup ? ' <i>(Gruppe)</i>' : ''}${l.ikea ? ' <span class="badge">IKEA</span>' : ''}</label>`
-          )
-          .join('')}
-      </div>
+    return `<div class="overlay"><div class="dialog wide">
+      <div class="dhead"><h2>Vorlage</h2><button class="ib" id="dlgX" title="Schließen (Esc)">${this._ic('close')}</button></div>
+      <div class="tpls">${Object.entries(TEMPLATES)
+        .map(([k, t]) => `<button class="chip ${k === g.type ? 'on' : ''}" data-tpl="${k}">${esc(t.name)}</button>`)
+        .join('')}</div>
+      <p class="lbl desc">${esc(T.desc)}</p>
+      <div class="sec2"><span class="lbl">Lampen</span><span class="chips">${areas
+        .map((a) => `<button class="chip" data-garea="${esc(a)}">${esc(a)}</button>`)
+        .join('')}<button class="chip" data-garea="">Keine</button></span></div>
+      <div class="genlights">${lights
+        .map(
+          (l) =>
+            `<label class="pick"><input type="checkbox" data-gl="${l.eid}" ${g.lights.includes(l.eid) ? 'checked' : ''}><span>${esc(l.name)}</span><span class="lbl">${esc(l.area || '')}${l.isGroup ? ' · Gruppe' : ''}${l.ikea ? ' · IKEA' : ''}</span></label>`
+        )
+        .join('')}</div>
       <div class="genparams">${T.params.map(field).join('')}</div>
-      <div class="foot">
-        <button id="genOk" class="primary">Erzeugen</button>
-        <button id="genCancel">Abbrechen</button>
-        <span class="hint">Ersetzt die Spuren des aktuellen Ablaufs. Danach frei bearbeitbar.</span>
-      </div>
+      <div class="dfoot"><span class="lbl">Ersetzt die Spuren des aktuellen Ablaufs.</span><span class="grow"></span><button class="btn txt" id="genCancel">Abbrechen</button><button class="btn pri" id="genOk">Erzeugen</button></div>
     </div></div>`;
   }
 
   _settingsHtml() {
     const st = this._settings;
-    const autoExists = !!this._autoEid();
-    return `<div class="overlay"><div class="dialog settings">
-      <div class="dhead"><h3>⚙ Einstellungen</h3><button id="dlgX" class="close" title="Schließen (Esc)">✕</button></div>
-
-      <section>
-        <h4>IKEA-Lampen</h4>
-        <p class="hint">IKEA-Lampen werden automatisch erkannt (Hersteller bzw. Modell – auch über Hue Bridge und Matter) und in der Spur mit <span class="badge">IKEA</span> markiert. Viele können Ton und Helligkeit nicht gleichzeitig überblenden.</p>
-        <label>Neue Spuren mit IKEA-Lampen:
-          <select id="stIkea">${Object.entries(IKEA_MODES)
-            .map(([v, t]) => `<option value="${v}" ${st.ikea_mode === v ? 'selected' : ''}>${t}</option>`)
-            .join('')}</select>
-        </label>
-        <label>Farbige IKEA-Lampen in Vorlagen:
-          <select id="stIkeaColor">
-            <option value="white" ${st.ikea_color !== 'color' ? 'selected' : ''}>Weißtöne statt Farben (empfohlen – ruhiger)</option>
-            <option value="color" ${st.ikea_color === 'color' ? 'selected' : ''}>Farben verwenden</option>
-          </select>
-        </label>
-        <p class="hint">Gilt für neu angelegte Spuren und Vorlagen. Pro Spur lassen sich Modus und „nacheinander" jederzeit ändern. Farben gehen als xy-Werte an die Lampen, das ergibt bei Hue die glattesten Übergänge.</p>
-      </section>
-
-      <section>
-        <h4>Automatisch stoppen</h4>
-        <label class="chk wrap"><input type="checkbox" id="stAway" ${st.stop_away ? 'checked' : ''}> Wenn niemand mehr zu Hause ist (Bereich „Zuhause" wird leer)</label>
-        <label class="indent">danach:
-          <select id="stAwayAction">
-            <option value="off" ${st.away_action === 'off' ? 'selected' : ''}>Lampen ausschalten</option>
-            <option value="restore" ${st.away_action === 'restore' ? 'selected' : ''}>Zustand vor dem Start wiederherstellen</option>
-            <option value="keep" ${st.away_action === 'keep' ? 'selected' : ''}>Lampen so lassen, wie sie gerade sind</option>
-          </select>
-        </label>
-        <label class="chk wrap"><input type="checkbox" id="stOff" ${st.stop_external_off ? 'checked' : ''}> Wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird – per Schalter, App, Sprachbefehl oder „Alles aus"</label>
-        <label class="indent">danach:
-          <select id="stOffAction">
-            <option value="all" ${st.off_action !== 'keep' ? 'selected' : ''}>alle Lampen des Ablaufs ausschalten</option>
-            <option value="keep" ${st.off_action === 'keep' ? 'selected' : ''}>nur die ausgeschalteten bleiben aus, die übrigen bleiben wie sie sind</option>
-          </select>
-        </label>
-        <p class="hint">„Niemand zu Hause" läuft über die Automation „Fade Studio: Auto-Stopp" (Einstellungen → Automationen)${autoExists ? '' : ', die beim Speichern angelegt wird'}. Dafür müssen Personen mit Standort eingerichtet sein, z. B. über die Companion-App. Das Erkennen von fremdem Ausschalten steckt direkt in jedem Ablauf.</p>
-      </section>
-
-      <div class="foot">
-        <button id="stSave" class="primary">Speichern</button>
-        <button id="stClose" class="big">Schließen</button>
-        <span class="grow"></span>
-        <span class="hint">Fade Studio ${FS_VERSION}</span>
-      </div>
-
-      <section class="dangerzone">
-        <h4>Alles entfernen</h4>
-        <p class="hint">Stoppt alle laufenden Abläufe und setzt ihre Lampen auf den Stand vor dem Start zurück. Danach werden alle Abläufe (Skripte), Helligkeitsregler, die Auto-Stopp-Automation, die Einstellungen und das Label „${LABEL}" gelöscht. Die Karte selbst bleibt und kann anschließend in HACS deinstalliert werden.</p>
-        <button id="removeAll" class="danger">Alles entfernen …</button>
-      </section>
+    const sel = (id, opts, cur) => `<select class="fld" id="${id}">${opts.map(([v, t]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
+    return `<div class="overlay"><div class="dialog">
+      <div class="dhead"><h2>Einstellungen</h2><button class="ib" id="dlgX" title="Schließen ohne Speichern (Esc)">${this._ic('close')}</button></div>
+      <div class="sec2"><span class="lbl">IKEA-Lampen</span></div>
+      <div class="opt"><span>Überblenden<small>Viele IKEA-Lampen schaffen Ton und Helligkeit nicht gleichzeitig.</small></span>${sel('stIkea', Object.entries(IKEA_MODES), st.ikea_mode)}</div>
+      <div class="opt"><span>Farbige IKEA-Lampen in Vorlagen<small>Zarte Farbübergänge können bei IKEA springen.</small></span>${sel('stIkeaColor', [['white', 'Weißtöne'], ['color', 'Farben']], st.ikea_color === 'color' ? 'color' : 'white')}</div>
+      <div class="sec2"><span class="lbl">Automatisch stoppen</span></div>
+      <div class="opt"><span>Niemand mehr zu Hause<small>Danach:</small>${sel('stAwayAction', [['off', 'Lampen ausschalten'], ['restore', 'Vorher-Zustand'], ['keep', 'So lassen']], st.away_action)}</span><input type="checkbox" class="sw" id="stAway" ${st.stop_away ? 'checked' : ''}></div>
+      <div class="opt"><span>Lampe von außen ausgeschaltet<small>Schalter, App, Sprachbefehl. Danach:</small>${sel('stOffAction', [['all', 'Alle Lampen des Ablaufs aus'], ['keep', 'Übrige so lassen']], st.off_action === 'keep' ? 'keep' : 'all')}</span><input type="checkbox" class="sw" id="stOff" ${st.stop_external_off ? 'checked' : ''}></div>
+      <div class="danger"><span>Alles entfernen<small>Stoppt laufende Abläufe, stellt den Zustand vor dem Start wieder her und löscht alle Abläufe, Regler, die Auto-Stopp-Automation und die Einstellungen.</small></span><button class="btn err" id="removeAll">Entfernen …</button></div>
+      <div class="dfoot"><span class="lbl mono">Version ${FS_VERSION}</span><span class="grow"></span><button class="btn pri" id="stSave">Fertig</button></div>
     </div></div>`;
   }
 
+  /* ---------- Spuren zeichnen ---------- */
   _renderLanes() {
     const s = this._show;
     if (!s) return;
-    const lanes = this.shadowRoot.querySelectorAll('.lane[data-lane]');
-    lanes.forEach((lane, li) => {
+    const L = s.length;
+    const n = clamp(Math.round(L * 2), 20, 120);
+    const major = L <= 90 ? 5 : L <= 300 ? 30 : 60;
+    this.shadowRoot.querySelectorAll('.lane[data-lane]').forEach((lane) => {
       const ti = Number(lane.dataset.lane);
       const m = lane.dataset.member;
       let tr = this._ref(ti, m);
@@ -1647,64 +1727,138 @@ class FadeStudioCard extends HTMLElement {
       if (ghost) tr = { mode: memberMode(s.tracks[ti].mode, lightInfo(this._hass, m)), kfs: s.tracks[ti].kfs };
       if (!tr) return;
       const W = lane.clientWidth;
-      if (!W) return;
-      const H = lane.clientHeight || LANE_H;
-      const L = s.length;
+      const H = lane.clientHeight;
+      if (!W || !H) return;
+      const P = LANE_PAD;
       const x = (t) => (t / L) * W;
-      const y = (b) => H - 6 - (b / 100) * (H - 12);
+      const y = (b) => P + (1 - b / 100) * (H - 2 * P);
+      // Spalten: Ton als Farbe, Helligkeit als Höhe
+      let cols = '';
+      for (let i = 0; i < n; i++) {
+        const st = stateAt(tr.kfs, L, s.loop, ((i + 0.5) * L) / n);
+        cols += `<i style="height:${Math.max(2, st.b)}%;background:${ghost ? 'var(--gap)' : toneCss(st, tr.mode)}"></i>`;
+      }
       const k = normalizeKfs(tr.kfs, L, s.loop);
       const endKf = s.loop ? { ...stateAt(tr.kfs, L, true, L - 0.0001), t: L } : { ...k[k.length - 1], t: L };
-      const pts = [...k, endKf];
-      const stops = pts
-        .map((p) => `<stop offset="${(p.t / L) * 100}%" stop-color="${rgbToHex(toneRgb(p, tr.mode))}"/>`)
-        .join('');
-      const poly = pts.map((p) => `${x(p.t).toFixed(1)},${y(p.b).toFixed(1)}`).join(' ');
-      // Nur die Fläche unterhalb der Helligkeitskurve zeigt den Lichtton (wie eine Hüllkurve).
-      const fill = `0,${H} ${poly} ${W},${H}`;
-      const circles = (ghost ? [] : tr.kfs)
-        .map((kf, ki) => {
-          const selected = this._sel && this._sel.ti === ti && this._sel.ki === ki && (this._sel.m || undefined) === m;
-          return `<circle class="kf ${selected ? 'sel' : ''}" data-ki="${ki}" cx="${x(kf.t)}" cy="${y(kf.b)}" r="${selected ? 9 : 7}" fill="${rgbToHex(toneRgb(kf, tr.mode))}"/>`;
-        })
-        .join('');
-      lane.innerHTML = `<svg width="${W}" height="${H}">
-        <defs><linearGradient id="g${li}">${stops}</linearGradient></defs>
-        <clipPath id="c${li}"><rect x="0" y="0" width="${W}" height="${H}" rx="6"/></clipPath>
-        <g clip-path="url(#c${li})">
-          <rect class="bg" x="0" y="0" width="${W}" height="${H}"/>
-          <polygon points="${fill}" fill="url(#g${li})"/>
-        </g>
-        <polyline points="${poly}" fill="none" stroke="rgba(0,0,0,.35)" stroke-width="3.5"/>
-        <polyline points="${poly}" fill="none" stroke="#fff" stroke-width="1.5"/>
-        ${circles}
-      </svg>`;
-      const svg = lane.querySelector('svg');
-      svg.addEventListener('pointerdown', (ev) => this._onLanePointer(ev, ti, lane, H));
+      const poly = [...k, endKf].map((p) => `${x(p.t).toFixed(1)},${y(p.b).toFixed(1)}`).join(' ');
+      let grid = '';
+      for (let t = major; t < L; t += major) grid += `<line x1="${x(t)}" x2="${x(t)}" y1="0" y2="${H}" class="g"/>`;
+      const sz = 14;
+      const handles = ghost
+        ? ''
+        : tr.kfs
+            .map((kf, ki) => {
+              const sel = this._sel && this._sel.ti === ti && this._sel.ki === ki && (this._sel.m || undefined) === m;
+              const z = sel ? 18 : sz;
+              return `<rect class="hit" data-ki="${ki}" x="${x(kf.t) - 16}" y="${y(kf.b) - 16}" width="32" height="32"/>
+                <rect class="kf ${sel ? 'sel' : ''}" data-ki="${ki}" x="${x(kf.t) - z / 2}" y="${y(kf.b) - z / 2}" width="${z}" height="${z}"/>`;
+            })
+            .join('');
+      lane.innerHTML = `<div class="cols" style="grid-template-columns:repeat(${n},1fr);gap:${W / n > 7 ? 2 : 1}px;top:${P}px;bottom:${P}px">${cols}</div>
+        <svg width="${W}" height="${H}">${grid}<polyline points="${poly}" class="${ghost ? 'curve ghost' : 'curve'}"/>${handles}</svg>`;
+      lane.querySelector('svg').addEventListener('pointerdown', (ev) => this._onLanePointer(ev, ti, lane));
     });
+    this._placeGuide();
     this._tick();
   }
 
-  _onLanePointer(ev, ti, lane, H) {
-    // Hinweis: Das SVG wird beim Ziehen laufend neu gezeichnet. Deshalb hängen die
-    // Listener am Fenster und die Maße kommen vom (bleibenden) Spur-Container.
+  _lineGeom() {
+    const r = this.shadowRoot;
+    const tl = r.querySelector('#tl');
+    const ruler = r.querySelector('#ruler');
+    if (!tl || !ruler) return null;
+    const a = tl.getBoundingClientRect();
+    const rr = ruler.getBoundingClientRect();
+    const lanes = r.querySelectorAll('.lane[data-lane]');
+    const bottom = lanes.length ? lanes[lanes.length - 1].getBoundingClientRect().bottom : rr.bottom;
+    return { left: rr.left - a.left, width: rr.width, top: rr.top - a.top, height: bottom - rr.top };
+  }
+
+  _placeGuide() {
+    const g = this.shadowRoot.querySelector('#guide');
+    if (!g) return;
+    const kf = this._sel && this._ref(this._sel.ti, this._sel.m)?.kfs[this._sel.ki];
+    const geo = this._lineGeom();
+    if (!kf || !geo) return (g.style.display = 'none');
+    Object.assign(g.style, {
+      display: 'block',
+      left: `${geo.left + (kf.t / this._show.length) * geo.width}px`,
+      top: `${geo.top}px`,
+      height: `${geo.height}px`,
+    });
+    this.shadowRoot.querySelector('#guideT').textContent = `${r1(kf.t).toFixed(1)} s`;
+  }
+
+  _tick() {
+    const r = this.shadowRoot;
+    const t = this._playTime();
+    const clk = r.querySelector('#clk');
+    if (clk) clk.textContent = t == null ? '0.0' : r1(t).toFixed(1);
+    const nph = r.querySelector('#nowph');
+    if (nph) {
+      nph.style.display = t == null ? 'none' : 'block';
+      if (t != null) nph.style.left = `${(t / this._show.length) * 100}%`;
+    }
+    const ph = r.querySelector('#ph');
+    if (!ph) return;
+    const geo = this._lineGeom();
+    if (t == null || !geo) return (ph.style.display = 'none');
+    Object.assign(ph.style, { display: 'block', left: `${geo.left + (t / this._show.length) * geo.width}px`, top: `${geo.top}px`, height: `${geo.height}px` });
+    r.querySelector('#phT').textContent = `${r1(t).toFixed(1)}`;
+  }
+
+  _updateStatus() {
+    const r = this.shadowRoot;
+    const run = this._running();
+    const pb = r.querySelector('#play');
+    if (pb) {
+      pb.classList.toggle('on', run);
+      pb.innerHTML = this._ic(run ? 'pause' : 'play');
+      pb.title = run ? 'Pause – Lampen bleiben, wie sie sind' : this._paused() != null ? 'Weiter an der gemerkten Stelle' : 'Starten';
+    }
+    const st = r.querySelector('#status');
+    if (st) {
+      st.innerHTML = `${run ? '<i class="led"></i>' : ''}${esc(this._status())}`;
+      st.classList.toggle('on', run);
+    }
+    const dim = r.querySelector('#dimmer');
+    const id = this._mode() === 'remote' ? r.querySelector('#play')?.dataset.cur?.replace('script.', '') : this._show.id;
+    const d = id ? this._hass.states[`input_number.${id}_dimmer`] : null;
+    if (dim && d && r.activeElement !== dim && this.shadowRoot.activeElement !== dim) {
+      dim.value = d.state;
+      const v = r.querySelector('#dimv');
+      if (v) v.textContent = `${Math.round(d.state)} %`;
+    }
+    const ln = r.querySelector('#lampsNow');
+    if (ln) {
+      const cur = r.querySelector('#play')?.dataset.cur;
+      const sh = cur === this._scriptEid() ? this._show : SESSION.lib[cur];
+      if (sh) ln.innerHTML = this._lampsNowHtml(sh);
+    }
+    // Laufanzeige in der Bibliothek aktuell halten
+    if ([...r.querySelectorAll('.item[data-show]')].some((el) => !!el.querySelector('.run') !== h_on(this._hass, el.dataset.show))) this._render();
+  }
+
+  _onLanePointer(ev, ti, lane) {
+    // Das SVG wird beim Ziehen neu gezeichnet – Listener am Fenster, Maße vom bleibenden Spur-Element.
     const s = this._show;
     const m = lane.dataset.member;
     const tr = this._ref(ti, m);
     if (!tr) {
-      // Mitglied folgt der Gruppe: erster Klick legt eine eigene Spur an (Kopie der Gruppenspur).
       this._makeOverride(ti, m);
       this._dirty = true;
-      this._msg = `${lightInfo(this._hass, m).name}: eigene Spur angelegt – jetzt einzeln bearbeitbar.`;
+      this._msg = `${lightInfo(this._hass, m).name}: eigene Spur angelegt.`;
       this._render();
       ev.preventDefault();
       return;
     }
     const rect = lane.getBoundingClientRect();
     const W = rect.width;
-    const toT = (cx) => clamp(Math.round((((cx - rect.left) / W) * s.length) * 2) / 2, 0, s.length);
-    const toB = (cy) => clamp(Math.round(((H - 6 - (cy - rect.top)) / (H - 12)) * 100), 0, 100);
+    const H = rect.height;
+    const toT = (cx) => clamp(Math.round(((cx - rect.left) / W) * s.length * 10) / 10, 0, s.length);
+    const toB = (cy) => clamp(Math.round(((H - LANE_PAD - (cy - rect.top)) / (H - 2 * LANE_PAD)) * 100), 0, 100);
     let ki;
-    if (ev.target.classList.contains('kf')) {
+    if (ev.target.dataset.ki != null) {
       ki = Number(ev.target.dataset.ki);
     } else {
       const t = toT(ev.clientX);
@@ -1714,18 +1868,23 @@ class FadeStudioCard extends HTMLElement {
       this._dirty = true;
     }
     this._sel = { ti, ki, m };
-    const startX = ev.clientX;
-    const startY = ev.clientY;
+    const sx = ev.clientX;
+    const sy = ev.clientY;
     let moved = false;
     const move = (e) => {
-      if (!moved && Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) < 4) return;
+      if (!moved && Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) < 4) return;
       moved = true;
       const kf = tr.kfs[ki];
       kf.t = toT(e.clientX);
       kf.b = toB(e.clientY);
       this._dirty = true;
       this._renderLanes();
-      this._syncKfEditor();
+      const r = this.shadowRoot;
+      if (r.querySelector('#kfT')) {
+        r.querySelector('#kfT').value = r1(kf.t);
+        r.querySelector('#kfB').value = Math.round(kf.b);
+        r.querySelector('#kfBv').textContent = `${Math.round(kf.b)} %`;
+      }
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
@@ -1739,50 +1898,188 @@ class FadeStudioCard extends HTMLElement {
     ev.preventDefault();
   }
 
-  _syncKfEditor() {
-    if (!this._sel) return;
-    const kf = this._ref(this._sel.ti, this._sel.m)?.kfs[this._sel.ki];
-    const r = this.shadowRoot;
-    if (!kf || !r.querySelector('#kfT')) return;
-    r.querySelector('#kfT').value = r1(kf.t);
-    r.querySelector('#kfB').value = Math.round(kf.b);
-    r.querySelector('#kfBv').textContent = `${Math.round(kf.b)} %${kf.b <= 0 ? ' (aus)' : ''}`;
-  }
-
   _markDirty() {
     this._dirty = true;
     const b = this.shadowRoot.querySelector('#save');
-    if (b) b.textContent = '● Speichern';
+    if (b) b.textContent = 'Speichern •';
+    const d = this.shadowRoot.querySelector('#discard');
+    if (d) d.disabled = false;
   }
 
+  _setLength(L) {
+    const s = this._show;
+    L = clamp(Number(L) || 30, 2, 600);
+    const f = L / s.length;
+    const scale = (kfs) => kfs.forEach((k) => (k.t = r1(k.t * f)));
+    s.tracks.forEach((t) => {
+      scale(t.kfs);
+      Object.values(t.members || {}).forEach((o) => scale(o.kfs));
+    });
+    s.length = L;
+    this._dirty = true;
+    this._render();
+  }
+
+  /* ---------- Ereignisse ---------- */
   _bind() {
     const r = this.shadowRoot;
     const s = this._show;
     const on = (sel, ev, fn) => r.querySelector(sel)?.addEventListener(ev, fn);
+    const all = (sel, fn) => r.querySelectorAll(sel).forEach((el) => el.addEventListener('click', () => fn(el)));
+    const confirmDiscard = () => !this._dirty || confirm('Ungespeicherte Änderungen verwerfen?');
 
-    on('#showSel', 'change', (e) => {
-      if (this._dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) return this._render();
-      this._loadShow(e.target.value);
-    });
-    on('#name', 'change', (e) => ((s.name = e.target.value), this._markDirty()));
-    on('#length', 'change', (e) => {
-      const L = clamp(Number(e.target.value) || 120, 5, 86400);
-      const f = L / s.length;
-      s.tracks.forEach((t) => t.kfs.forEach((k) => (k.t = r1(k.t * f))));
-      s.length = L;
-      this._dirty = true;
+    // Bibliothek / Ansicht
+    all('[data-show]', (el) => confirmDiscard() && this._loadShow(el.dataset.show));
+    all('[data-playshow]', (el) => this._playShow(el.dataset.playshow));
+    on('#newShow', 'click', () => confirmDiscard() && (this._newShow(), this._render()));
+    on('#toStudio', 'click', () => ((SESSION.view = 'studio'), this._render()));
+    on('#toStudio2', 'click', () => ((SESSION.view = 'studio'), this._render()));
+    on('#toRemote', 'click', () => ((SESSION.view = 'remote'), this._render()));
+    on('#openGen', 'click', () => {
+      this._gen = { type: 'drift', lights: s.tracks.map((t) => t.entity), p: { ...TEMPLATES.drift.defaults } };
       this._render();
     });
+
+    // Transport
+    on('#play', 'click', (e) => {
+      const cur = e.currentTarget.dataset.cur;
+      if (cur && cur !== this._scriptEid()) this._playShow(cur);
+      else this._play();
+    });
+    on('#stop', 'click', async () => {
+      const cur = r.querySelector('#play')?.dataset.cur;
+      if (cur && cur !== this._scriptEid()) await this._loadShow(cur);
+      this._stop();
+    });
+    on('#dimmer', 'input', (e) => {
+      const v = r.querySelector('#dimv');
+      if (v) v.textContent = `${e.target.value} %`;
+    });
+    on('#dimmer', 'change', (e) => {
+      const cur = r.querySelector('#play')?.dataset.cur;
+      const id = cur ? cur.replace('script.', '') : s.id;
+      const d = `input_number.${id}_dimmer`;
+      if (this._hass.states[d]) this._hass.callService('input_number', 'set_value', { entity_id: d, value: Number(e.target.value) });
+    });
+
+    // Parameter
+    all('[data-len]', (el) => this._setLength(el.dataset.len));
+    on('#length', 'change', (e) => this._setLength(e.target.value));
     on('#loop', 'change', (e) => ((s.loop = e.target.checked), (this._dirty = true), this._render()));
     on('#fadeIn', 'change', (e) => ((s.fadeIn = Math.max(1, Number(e.target.value) || 1)), this._markDirty()));
     on('#endMode', 'change', (e) => ((s.end.mode = e.target.value), (this._dirty = true), this._render()));
     on('#endScene', 'change', (e) => ((s.end.scene = e.target.value), this._markDirty()));
     on('#endFade', 'change', (e) => ((s.end.fade = Math.max(0, Number(e.target.value) || 0)), this._markDirty()));
-    on('#play', 'click', () => this._play());
-    on('#stop', 'click', () => this._stop());
-    on('#dimmer', 'change', (e) => this._setDimmer(e.target.value));
+    on('#name', 'change', (e) => ((s.name = e.target.value), this._markDirty()));
+
+    // Spuren
+    all('[data-mode]', (el) => {
+      const ref = this._ref(Number(el.dataset.mode), el.dataset.member);
+      if (!ref) return;
+      ref.mode = el.dataset.val;
+      this._dirty = true;
+      this._render();
+    });
+    all('[data-split]', (el) => {
+      const ref = this._ref(Number(el.dataset.split), el.dataset.member);
+      ref.split = !ref.split;
+      this._dirty = true;
+      this._render();
+    });
+    all('[data-expand]', (el) => {
+      const tr = s.tracks[Number(el.dataset.expand)];
+      tr.expanded = !tr.expanded;
+      this._render();
+    });
+    all('[data-reset]', (el) => {
+      delete s.tracks[Number(el.dataset.reset)].members[el.dataset.member];
+      if (this._sel?.m === el.dataset.member) this._sel = null;
+      this._dirty = true;
+      this._render();
+    });
+    all('[data-deltrack]', (el) => {
+      s.tracks.splice(Number(el.dataset.deltrack), 1);
+      this._sel = null;
+      this._dirty = true;
+      this._render();
+    });
+    on('#addTrack', 'click', () => {
+      const eid = r.querySelector('#addSel').value;
+      if (!eid) return;
+      const info = lightInfo(this._hass, eid);
+      const { mode, split } = trackDefaults(info, 'ct', this._genCtx());
+      const k = clamp(2700, info.minK, info.maxK);
+      const c = rgbToHex(kelvinToRgb(k));
+      s.tracks.push({ entity: eid, mode, split, kfs: [{ t: 0, b: 40, k, c }, { t: r1(s.length / 2), b: 70, k, c }] });
+      this._dirty = true;
+      this._render();
+    });
+
+    // Inspektor
+    if (this._sel) {
+      const { ti, ki, m } = this._sel;
+      const tr = this._ref(ti, m);
+      const kf = tr?.kfs[ki];
+      if (kf) {
+        const live = () => (this._markDirty(), this._renderLanes());
+        on('#kfT', 'change', (e) => ((kf.t = clamp(Number(e.target.value) || 0, 0, s.length)), live()));
+        on('#kfB', 'input', (e) => {
+          kf.b = Number(e.target.value);
+          r.querySelector('#kfBv').textContent = `${kf.b} %`;
+          live();
+        });
+        all('[data-k]', (el) => {
+          kf.k = Number(el.dataset.k);
+          kf.c = rgbToHex(kelvinToRgb(kf.k));
+          this._dirty = true;
+          this._render();
+        });
+        all('[data-c]', (el) => {
+          kf.c = el.dataset.c;
+          this._dirty = true;
+          this._render();
+        });
+        on('#kfC', 'input', (e) => ((kf.c = e.target.value), live()));
+        on('#kfPreview', 'click', () => this._previewKf(ti, ki, m));
+        on('#kfAll', 'click', () => {
+          s.tracks.forEach((t, i) => {
+            if (i === ti && !m) return;
+            const info = lightInfo(this._hass, t.entity);
+            const same = t.kfs.find((x) => Math.abs(x.t - kf.t) < 0.25);
+            const copy = { t: kf.t, b: kf.b, k: clamp(kf.k, info.minK, info.maxK), c: kf.c };
+            if (same) Object.assign(same, copy);
+            else t.kfs.push(copy);
+          });
+          this._dirty = true;
+          this._setMsg('Auf alle Spuren übertragen.');
+          this._render();
+        });
+        on('#kfDel', 'click', () => {
+          tr.kfs.splice(ki, 1);
+          this._sel = null;
+          this._dirty = true;
+          this._render();
+        });
+      }
+    }
+
+    // Fuß
     on('#save', 'click', () => this._save());
     on('#delete', 'click', () => this._deleteShow());
+    on('#discard', 'click', () => {
+      if (!confirm('Ungespeicherte Änderungen zurücknehmen?')) return;
+      if (s.id) this._loadShow(`script.${s.id}`);
+      else (this._newShow(), this._render());
+    });
+
+    // Dialoge
+    const closeDialogs = () => {
+      SESSION.settingsOpen = false;
+      this._gen = null;
+      this._render();
+    };
+    on('#dlgX', 'click', closeDialogs);
+    on('.overlay', 'click', (e) => e.target.classList.contains('overlay') && closeDialogs());
     on('#settings', 'click', () => {
       SESSION.settingsOpen = true;
       this._render();
@@ -1790,7 +2087,6 @@ class FadeStudioCard extends HTMLElement {
     });
     if (SESSION.settingsOpen) {
       on('#removeAll', 'click', () => this._removeAll());
-      on('#stClose', 'click', () => ((SESSION.settingsOpen = false), this._render()));
       on('#stSave', 'click', async () => {
         const g = (id) => r.querySelector(id);
         await this._saveSettings({
@@ -1805,141 +2101,31 @@ class FadeStudioCard extends HTMLElement {
         this._render();
       });
     }
-    on('#addTrack', 'click', () => {
-      const eid = r.querySelector('#addSel').value;
-      if (!eid) return;
-      const info = lightInfo(this._hass, eid);
-      const { mode, split } = trackDefaults(info, 'ct', this._genCtx());
-      const k = clamp(2700, info.minK, info.maxK);
-      s.tracks.push({
-        entity: eid,
-        mode,
-        split,
-        kfs: [
-          { t: 0, b: 40, k, c: rgbToHex(kelvinToRgb(k)) },
-          { t: r1(s.length / 2), b: 70, k, c: rgbToHex(kelvinToRgb(k)) },
-        ],
-      });
-      this._dirty = true;
-      this._render();
-    });
-    r.querySelectorAll('[data-mode]').forEach((el) =>
-      el.addEventListener('change', (e) => {
-        this._ref(Number(el.dataset.mode), el.dataset.member).mode = e.target.value;
-        this._dirty = true;
-        this._render();
-      })
-    );
-    r.querySelectorAll('[data-split]').forEach((el) =>
-      el.addEventListener('change', (e) => ((this._ref(Number(el.dataset.split), el.dataset.member).split = e.target.checked), this._markDirty()))
-    );
-    r.querySelectorAll('[data-expand]').forEach((el) =>
-      el.addEventListener('click', () => {
-        const tr = s.tracks[Number(el.dataset.expand)];
-        tr.expanded = !tr.expanded;
-        this._render();
-      })
-    );
-    r.querySelectorAll('[data-reset]').forEach((el) =>
-      el.addEventListener('click', () => {
-        const tr = s.tracks[Number(el.dataset.reset)];
-        delete tr.members[el.dataset.member];
-        if (this._sel?.m === el.dataset.member) this._sel = null;
-        this._dirty = true;
-        this._render();
-      })
-    );
-    r.querySelectorAll('[data-deltrack]').forEach((el) =>
-      el.addEventListener('click', () => {
-        s.tracks.splice(Number(el.dataset.deltrack), 1);
-        this._sel = null;
-        this._dirty = true;
-        this._render();
-      })
-    );
-
-    // Punkt-Editor
-    if (this._sel) {
-      const { ti, ki, m } = this._sel;
-      const tr = this._ref(ti, m);
-      const kf = tr?.kfs[ki];
-      if (kf) {
-        const live = () => (this._markDirty(), this._renderLanes());
-        on('#kfT', 'change', (e) => ((kf.t = clamp(Number(e.target.value) || 0, 0, s.length)), live()));
-        on('#kfB', 'input', (e) => {
-          kf.b = Number(e.target.value);
-          r.querySelector('#kfBv').textContent = `${kf.b} %${kf.b <= 0 ? ' (aus)' : ''}`;
-          live();
-        });
-        on('#kfK', 'input', (e) => {
-          kf.k = Number(e.target.value);
-          kf.c = rgbToHex(kelvinToRgb(kf.k));
-          r.querySelector('#kfKv').textContent = `${kf.k} K`;
-          live();
-        });
-        on('#kfC', 'input', (e) => ((kf.c = e.target.value), live()));
-        on('#kfPreview', 'click', () => this._previewKf(ti, ki, m));
-        on('#kfAll', 'click', () => {
-          s.tracks.forEach((t, i) => {
-            if (i === ti) return;
-            const info = lightInfo(this._hass, t.entity);
-            const same = t.kfs.find((x) => Math.abs(x.t - kf.t) < 0.25);
-            const copy = { t: kf.t, b: kf.b, k: clamp(kf.k, info.minK, info.maxK), c: kf.c };
-            if (same) Object.assign(same, copy);
-            else t.kfs.push(copy);
-          });
-          this._dirty = true;
-          this._render();
-        });
-        on('#kfDel', 'click', () => {
-          tr.kfs.splice(ki, 1);
-          this._sel = null;
-          this._dirty = true;
-          this._render();
-        });
-        on('#kfClose', 'click', () => ((this._sel = null), this._render()));
-      }
-    }
-
-    // Vorlagen
-    on('#genSel', 'change', (e) => {
-      const type = e.target.value;
-      if (!TEMPLATES[type]) return;
-      this._gen = { type, lights: s.tracks.map((t) => t.entity), p: { ...TEMPLATES[type].defaults } };
-      this._render();
-    });
-    // Dialoge: ✕, Tippen neben das Fenster oder Esc schließt
-    const closeDialogs = () => {
-      SESSION.settingsOpen = false;
-      this._gen = null;
-      this._render();
-    };
-    on('#dlgX', 'click', closeDialogs);
-    on('.overlay', 'click', (e) => {
-      if (e.target.classList.contains('overlay')) closeDialogs();
-    });
     if (this._gen) {
+      const g = this._gen;
+      all('[data-tpl]', (el) => {
+        g.type = el.dataset.tpl;
+        g.p = { ...TEMPLATES[g.type].defaults };
+        this._render();
+      });
       r.querySelectorAll('[data-gl]').forEach((el) =>
         el.addEventListener('change', () => {
           const e = el.dataset.gl;
-          this._gen.lights = el.checked ? [...new Set([...this._gen.lights, e])] : this._gen.lights.filter((x) => x !== e);
+          g.lights = el.checked ? [...new Set([...g.lights, e])] : g.lights.filter((x) => x !== e);
         })
       );
-      r.querySelectorAll('[data-garea]').forEach((el) =>
-        el.addEventListener('click', () => {
-          const a = el.dataset.garea;
-          this._gen.lights = a ? this._lights().filter((l) => l.area === a && !l.isGroup).map((l) => l.eid) : [];
-          this._render();
-        })
-      );
+      all('[data-garea]', (el) => {
+        const a = el.dataset.garea;
+        g.lights = a ? this._lights().filter((l) => l.area === a && !l.isGroup).map((l) => l.eid) : [];
+        this._render();
+      });
       r.querySelectorAll('[data-gp]').forEach((el) =>
         el.addEventListener('change', () => {
-          this._gen.p[el.dataset.gp] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : Number(el.value);
+          g.p[el.dataset.gp] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : Number(el.value);
         })
       );
-      on('#genCancel', 'click', () => ((this._gen = null), this._render()));
+      on('#genCancel', 'click', closeDialogs);
       on('#genOk', 'click', () => {
-        const g = this._gen;
         if (!g.lights.length) return alert('Bitte mindestens eine Lampe wählen.');
         const T = TEMPLATES[g.type];
         const res = T.build(this._hass, g.lights, g.p, this._genCtx());
@@ -1950,99 +2136,232 @@ class FadeStudioCard extends HTMLElement {
         this._gen = null;
         this._sel = null;
         this._dirty = true;
+        SESSION.view = 'studio';
         this._render();
       });
     }
   }
 }
 
-const STYLE = `
-  :host { display:block; }
-  ha-card { padding: 12px 16px 16px; position: relative; }
-  button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc);
-    background: var(--secondary-background-color, #f3f3f3); color: var(--primary-text-color); cursor: pointer; }
-  button:disabled { opacity: .45; cursor: default; }
-  button.primary { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); border-color: transparent; }
-  button.danger { color: var(--error-color, #db4437); }
-  button.icon { padding: 2px 8px; background: transparent; border: none; }
-  input, select { font: inherit; color: var(--primary-text-color); background: var(--card-background-color, #fff);
-    border: 1px solid var(--divider-color, #ccc); border-radius: 6px; padding: 4px 6px; }
-  input[type=number] { width: 4.5em; }
-  input[type=range] { padding: 0; border: none; background: transparent; vertical-align: middle; }
-  input[type=checkbox] { vertical-align: middle; margin: 0 4px 0 0; }
-  label { white-space: nowrap; }
-  .grow { flex: 1; }
-  .bar, .props, .transport, .foot, .kfedit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-  .bar { margin-bottom: 10px; }
-  .title { font-size: 1.25em; font-weight: 500; }
-  .props { padding: 8px 0; border-top: 1px solid var(--divider-color, #ddd); }
-  .transport { padding: 8px 0; }
-  .status { color: var(--secondary-text-color); }
-  .status.on { color: var(--success-color, #43a047); font-weight: 500; }
-  .dim input { width: 180px; }
-  .hint { color: var(--secondary-text-color); font-size: .9em; }
-  .msg { color: var(--secondary-text-color); }
-  .timeline { margin: 6px 0 10px; }
-  .row { display: grid; grid-template-columns: 210px 1fr; gap: 10px; align-items: center; margin: 6px 0; }
-  .lab { min-width: 0; }
-  .lname { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .lctl { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
-  .lctl select { max-width: 130px; padding: 2px 4px; }
-  .small { font-size: .85em; }
-  .lane { position: relative; height: ${LANE_H}px; min-width: 0; touch-action: none; }
-  .lane svg { display: block; cursor: crosshair; position: absolute; left: 0; top: 0; }
-  .lane .bg { fill: var(--secondary-background-color, #e8e8ec); }
-  .lane svg { border-radius: 6px; outline: 1px solid var(--divider-color, #ccc); }
-  .kf { stroke: #333; stroke-width: 2; cursor: grab; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
-  .kf.sel { stroke: var(--primary-color, #03a9f4); stroke-width: 3; }
-  .ruler { margin-bottom: 0; }
-  .rulerlane { height: 18px; }
-  .tick { position: absolute; top: 0; font-size: .75em; color: var(--secondary-text-color); transform: translateX(-50%); }
-  .tick:first-child { transform: none; }
-  .timeline { position: relative; }
-  .phline { display: none; position: absolute; width: 2px; margin-left: -1px; z-index: 2; pointer-events: none;
-    background: var(--primary-color, #03a9f4); box-shadow: 0 0 6px var(--primary-color, #03a9f4); }
-  .phtime { position: absolute; top: -2px; left: 5px; font-size: .72em; font-weight: 600; padding: 0 4px; border-radius: 4px;
-    background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); white-space: nowrap; }
-  .gear { font-size: 1.3em; padding: 2px 8px; }
-  .dhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
-  .dhead h3 { margin: 0; }
-  .close { font-size: 1.3em; line-height: 1; padding: 6px 12px; border-radius: 50%; }
-  .big { padding: 8px 20px; font-weight: 500; }
-  .settings section { margin: 12px 0; }
-  .settings h4 { margin: 0 0 6px; }
-  .settings label { display: block; margin: 6px 0; white-space: normal; }
-  .settings .indent { margin-left: 26px; }
-  .dangerzone { border: 1px solid var(--error-color, #db4437); border-radius: 8px; padding: 10px 12px; }
-  .dangerzone h4 { color: var(--error-color, #db4437); }
-  .row.member .lab { padding-left: 14px; border-left: 2px solid var(--divider-color, #ccc); }
-  .row.member .lctl { flex-wrap: wrap; }
-  .row.member .lane { height: ${LANE_H - 16}px; }
-  .lane.ghost svg { opacity: .4; cursor: copy; }
-  .fold { padding: 0 4px 0 0; font-size: 1em; }
-  .badge { font-size: .68em; font-weight: 600; padding: 1px 5px; border-radius: 4px; vertical-align: middle;
-    background: var(--secondary-background-color, #eee); color: var(--secondary-text-color); border: 1px solid var(--divider-color, #ccc); }
-  .empty { padding: 18px; text-align: center; color: var(--secondary-text-color); border: 1px dashed var(--divider-color, #ccc); border-radius: 8px; }
-  .add .lab select { width: 100%; }
-  .kfedit { padding: 10px 12px; margin-bottom: 10px; border-radius: 8px; background: var(--secondary-background-color, #f5f5f5); }
-  .ctrange { background: linear-gradient(90deg, #ff9329, #ffd6aa, #fff4ea, #e0ecff) !important; border-radius: 6px; }
-  .foot { border-top: 1px solid var(--divider-color, #ddd); padding-top: 10px; }
-  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 10; }
-  .dialog { background: var(--card-background-color, #fff); color: var(--primary-text-color); border-radius: 12px; padding: 16px 20px;
-    width: min(680px, 94vw); max-height: 90vh; overflow: auto; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
-  .dialog h3 { margin: 0 0 6px; }
-  .genlights { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 12px; margin: 10px 0;
-    max-height: 260px; overflow: auto; padding: 8px; border: 1px solid var(--divider-color, #ddd); border-radius: 8px; }
-  .arearow { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
-  .arearow button { padding: 2px 8px; }
-  .genlights label { white-space: normal; }
-  .genparams { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 12px; }
-  @media (max-width: 600px) {
-    label { white-space: normal; }
-    select { max-width: 100%; }
-    .row { grid-template-columns: 1fr; gap: 4px; }
-    .ruler .lab { display: none; }
+const h_on = (hass, eid) => hass.states[eid]?.state === 'on';
+const LANE_PAD = 9;
+
+/* Farbskala nur für die Anzeige (docs/DESIGN.md: Lichttöne sichtbar machen) */
+const KSCALE = [
+  [1800, [255, 110, 0]],
+  [2200, [255, 140, 30]],
+  [2500, [255, 170, 70]],
+  [2800, [255, 198, 120]],
+  [3100, [255, 220, 165]],
+  [3500, [255, 238, 210]],
+  [4000, [250, 248, 240]],
+  [5000, [225, 235, 255]],
+  [6500, [190, 212, 255]],
+];
+function ktone(k) {
+  for (let i = 0; i < KSCALE.length - 1; i++) {
+    const [a, ca] = KSCALE[i];
+    const [b, cb] = KSCALE[i + 1];
+    if (k <= b) {
+      const f = clamp((k - a) / (b - a), 0, 1);
+      return `rgb(${ca.map((v, j) => Math.round(v + (cb[j] - v) * f)).join(',')})`;
+    }
   }
+  return 'rgb(190,212,255)';
+}
+function toneCss(kf, mode) {
+  if (mode === 'color') return kf.c;
+  if (mode === 'ct') return ktone(kf.k);
+  return '#efe9df';
+}
+
+const STYLE = `
+  :host { display: block; }
+  .light { --bg:#e9e8e4; --panel:#f6f5f2; --well:#ecebe7; --ink:#141414; --ink-2:#6e6d69; --line:#d6d5d0; --acc:#ff5f1f; --acc-ink:#141414; --disp:#121212; --gap:#2a2a2a; }
+  .dark  { --bg:#0f0f0f; --panel:#1a1a1a; --well:#242424; --ink:#ececec; --ink-2:#8b8b8b; --line:#2e2e2e; --acc:#ff6a26; --acc-ink:#141414; --disp:#0b0b0b; --gap:#2a2a2a; }
+  ha-card.fs { --ha-card-background: var(--panel); --ha-card-border-color: var(--line); background: var(--panel); color: var(--ink); overflow: hidden; position: relative;
+    font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, Roboto, system-ui, sans-serif)); font-size: 14px; line-height: 20px; --mdc-icon-size: 20px; }
+  .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .lbl { font-size: 12px; line-height: 16px; color: var(--ink-2); }
+  .slbl { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; line-height: 14px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); }
+  .grow { flex: 1; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+
+  /* Rahmen: Formen wie Home Assistant */
+  .key { width: 48px; height: 48px; border-radius: 12px; border: 0; background: var(--well); color: var(--ink); display: grid; place-items: center; padding: 0; --mdc-icon-size: 24px; }
+  .key.on { background: var(--acc); color: var(--acc-ink); }
+  .key.sm { width: 44px; height: 44px; }
+  .ib { width: 40px; height: 40px; border-radius: 50%; border: 0; background: transparent; color: var(--ink); display: grid; place-items: center; padding: 0; flex: none; }
+  .ib:hover { background: var(--well); }
+  .ib.sm { width: 32px; height: 32px; --mdc-icon-size: 18px; color: var(--ink-2); }
+  .btn { height: 40px; padding: 0 16px; border-radius: 10px; border: 0; background: var(--well); color: var(--ink); font-weight: 500; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; --mdc-icon-size: 18px; }
+  .btn.pri { background: var(--ink); color: var(--panel); }
+  .btn.txt { background: transparent; }
+  .btn.muted { color: var(--ink-2); font-weight: 400; }
+  .btn.err { background: transparent; color: #e5484d; border: 1px solid color-mix(in srgb, #e5484d 50%, transparent); }
+  .fld { height: 36px; box-sizing: border-box; border-radius: 8px; border: 0; background: var(--well); color: var(--ink); padding: 0 10px; font: inherit; font-size: 14px; min-width: 0; }
+  .fld.num { width: 64px; }
+  .fld.name { width: 100%; font-weight: 500; }
+  .fld:disabled { opacity: .4; }
+  .rng { width: 100%; accent-color: var(--acc); height: 28px; margin: 0; }
+  .sw { appearance: none; -webkit-appearance: none; width: 36px; height: 14px; border-radius: 7px; background: var(--line); position: relative; margin: 6px 0; cursor: pointer; flex: none; }
+  .sw::after { content: ''; position: absolute; top: -3px; left: -2px; width: 20px; height: 20px; border-radius: 50%; background: var(--ink-2); transition: left .15s; }
+  .sw:checked { background: color-mix(in srgb, var(--acc) 50%, transparent); }
+  .sw:checked::after { left: 18px; background: var(--acc); }
+  .chips { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+  .chip { height: 32px; min-width: 40px; padding: 0 10px; box-sizing: border-box; border-radius: 8px; border: 1px solid var(--line); background: transparent; display: inline-grid; place-items: center; font-size: 13px; color: var(--ink-2); }
+  .chip.on { border-color: var(--acc); color: var(--acc); }
+  .tag { height: 26px; font-size: 11px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--ink-2); white-space: nowrap; display: inline-grid; place-items: center; }
+  .tag.on { border-color: var(--acc); color: var(--acc); }
+  .led { width: 6px; height: 6px; border-radius: 50%; background: var(--acc); display: inline-block; margin-right: 6px; vertical-align: 1px; }
+  .run { font-size: 12px; color: var(--acc); }
+  #status.on { color: var(--acc); }
+  .hd { height: 64px; display: flex; align-items: center; gap: 4px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--line); box-sizing: border-box; }
+  .title { font-size: 16px; font-weight: 600; letter-spacing: -.01em; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .band { border-bottom: 1px solid var(--line); }
+
+  /* Sequenz: eigene Sprache */
+  .disp { background: var(--disp); border-radius: 2px; padding: 2px; display: grid; gap: 1px; box-sizing: border-box; }
+  .disp.bars { align-items: end; grid-template-columns: repeat(30, 1fr); height: 22px; }
+  .disp.bars.big { grid-template-columns: repeat(60, 1fr); height: 64px; position: relative; margin-top: 14px; }
+  .disp i { display: block; }
+  .nowph { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--acc); }
+  .seg { display: inline-flex; gap: 2px; }
+  .seg button { min-width: 44px; height: 30px; padding: 0 6px; border: 0; background: transparent; border-bottom: 2px solid transparent; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); }
+  .seg button.on { color: var(--ink); border-color: var(--acc); }
+
+  /* Studio */
+  .studio { display: grid; grid-template-columns: 272px 1fr; min-height: 640px; }
+  .narrow .studio { grid-template-columns: 1fr; }
+  .lib { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+  .items { flex: 1; overflow: auto; }
+  .item { width: 100%; box-sizing: border-box; text-align: left; border: 0; background: transparent; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 12px 12px 14px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+  .item .nm { font-weight: 500; }
+  .item .disp { grid-column: 1 / -1; margin-top: 8px; }
+  .item.sel { background: var(--well); box-shadow: inset 3px 0 0 var(--acc); }
+  .empty { padding: 16px 20px; }
+  .lib .ft { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
+  .main { display: flex; flex-direction: column; min-width: 0; }
+  .transport { min-height: 88px; display: grid; grid-template-columns: auto auto 1fr minmax(220px, 320px); align-items: center; gap: 20px; padding: 12px 24px; border-bottom: 1px solid var(--line); box-sizing: border-box; }
+  .narrow .transport { grid-template-columns: auto 1fr; padding: 12px 16px; }
+  .narrow .transport > span:empty { display: none; }
+  .narrow .transport .master { grid-column: 1 / -1; }
+  .keys { display: flex; gap: 8px; }
+  .clock .t { font-size: 34px; line-height: 40px; letter-spacing: -.02em; }
+  .tot { color: var(--ink-2); font-size: 15px; letter-spacing: 0; margin-left: 6px; }
+  .master { display: grid; grid-template-columns: auto 1fr 48px; gap: 12px; align-items: center; }
+  .val { text-align: right; white-space: nowrap; }
+  .params { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .params .cell { border-bottom: 0; box-shadow: 0 1px 0 var(--line); }
+  .params .cell:last-child { flex: 1; min-width: 180px; }
+  .cell { padding: 10px 20px 12px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; justify-content: center; min-width: 0; }
+  .cell:last-child { border-right: 0; }
+  .narrow .cell { border-bottom: 1px solid var(--line); padding: 10px 16px; }
+  .v { display: flex; align-items: center; gap: 6px; }
+  .u { color: var(--ink-2); font-size: 13px; }
+
+  .tl { position: relative; padding-right: 24px; }
+  .narrow .tl { padding-right: 16px; }
+  .row { display: grid; grid-template-columns: 240px 1fr; }
+  .narrow .row { grid-template-columns: 1fr; }
+  .row > .th { padding: 10px 12px 10px 24px; border-right: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; gap: 4px; min-width: 0; }
+  .narrow .row > .th { border-right: 0; padding: 10px 0 4px 16px; }
+  .row > .ln { padding: 8px 0 8px 16px; min-width: 0; position: relative; }
+  .track { border-bottom: 1px solid var(--line); }
+  .track.sel > .th { background: var(--well); box-shadow: inset 3px 0 0 var(--acc); }
+  .ruler .ln { height: 44px; padding: 0 0 0 16px; }
+  .narrow .ruler .th { display: none; }
+  .rulerlane { position: relative; height: 100%; }
+  .tick { position: absolute; bottom: 0; width: 1px; background: var(--line); height: 4px; }
+  .tick.S { height: 7px; background: var(--ink-2); opacity: .6; }
+  .tick.M { height: 14px; background: var(--ink); }
+  .tlab { position: absolute; bottom: 16px; font-size: 12px; color: var(--ink); transform: translateX(-50%); font-weight: 500; white-space: nowrap; }
+  .nm2 { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .nmt { flex: 1; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .del { opacity: .6; }
+  .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .sub .th { padding-left: 48px; }
+  .sub .nmt { font-weight: 400; }
+  .lane { position: relative; height: 72px; background: var(--disp); border-radius: 2px; touch-action: none; }
+  .sub .lane { height: 52px; }
+  .lane .cols { position: absolute; left: 0; right: 0; display: grid; align-items: end; pointer-events: none; }
+  .lane .cols i { display: block; }
+  .lane svg { position: absolute; inset: 0; overflow: visible; cursor: crosshair; }
+  .lane .g { stroke: rgba(255,255,255,.14); stroke-width: 1; }
+  .lane .curve { fill: none; stroke: #f2f2f2; stroke-width: 1.5; }
+  .lane .curve.ghost { stroke-dasharray: 3 4; stroke-opacity: .5; }
+  .lane .hit { fill: transparent; cursor: grab; }
+  .lane .kf { fill: #141414; stroke: #f2f2f2; stroke-width: 2; cursor: grab; }
+  .lane .kf.sel { fill: var(--acc); stroke: #141414; }
+  .lane.ghost svg { cursor: copy; }
+  .playhead { position: absolute; width: 2px; margin-left: -1px; background: var(--acc); pointer-events: none; display: none; z-index: 2; }
+  .playhead b { position: absolute; top: 2px; left: 5px; font-size: 11px; line-height: 16px; padding: 0 5px; background: var(--acc); color: var(--acc-ink); font-weight: 500; }
+  .guide { position: absolute; width: 0; border-left: 1px dashed var(--acc); pointer-events: none; display: none; z-index: 1; }
+  .guide b { position: absolute; top: 22px; left: 4px; font-size: 11px; line-height: 16px; padding: 0 5px; border: 1px solid var(--acc); color: var(--acc); background: var(--panel); font-weight: 500; white-space: nowrap; }
+  .addrow { display: flex; gap: 8px; padding: 12px 0 12px 24px; border-bottom: 1px solid var(--line); }
+  .addrow .fld { max-width: 320px; flex: 1; }
+  .insp { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .insp .cell { border-right: 1px solid var(--line); }
+  .insp .wide { flex: 1; padding: 14px 24px; }
+  .insp .who { width: 216px; padding-left: 24px; }
+  .insp .who .n { font-weight: 500; }
+  .insp .grow2 { flex: 1; min-width: 240px; }
+  .insp .acts { flex-direction: row; align-items: center; gap: 6px; border-right: 0; flex-wrap: wrap; }
+  .ctl { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; min-width: 160px; }
+  .sw-row { display: grid; gap: 2px; padding: 2px; height: 32px; }
+  .sw-row button { border: 0; padding: 0; border-radius: 1px; min-width: 14px; }
+  .sw-row button.sel { outline: 2px solid var(--acc); outline-offset: 1px; position: relative; z-index: 1; }
+  .colorpick { width: 40px; height: 32px; border: 0; padding: 0; background: transparent; }
+  .foot { min-height: 64px; display: flex; align-items: center; gap: 8px; padding: 8px 16px 8px 16px; margin-top: auto; flex-wrap: wrap; }
+
+  /* Fernbedienung */
+  .m-remote .now { padding: 18px 20px 20px; }
+  .m-remote .now .nm { font-size: 22px; line-height: 28px; font-weight: 500; letter-spacing: -.01em; margin-top: 4px; }
+  .m-remote .now .t { font-size: 44px; line-height: 52px; letter-spacing: -.03em; margin-top: 12px; }
+  .m-remote .now .tot { font-size: 16px; }
+  .rkeys { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 16px 20px; }
+  .rkeys .key { width: 100%; height: 64px; border-radius: 14px; --mdc-icon-size: 28px; }
+  .rmaster { padding: 14px 20px 12px; }
+  .rmaster .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .sec { padding: 16px 20px 8px; }
+  .lamps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 20px 16px; }
+  .lamp { border-radius: 12px; background: var(--well); padding: 10px 12px; display: grid; grid-template-columns: 32px 1fr; gap: 2px 10px; align-items: center; min-width: 0; }
+  .lamp .lv { grid-row: 1 / span 2; width: 32px; height: 32px; border-radius: 6px; background: var(--disp); padding: 3px; box-sizing: border-box; display: grid; grid-template-columns: 1fr 4px; gap: 2px; }
+  .lamp .lv > i { display: block; border-radius: 1px; }
+  .lamp .lv b { display: block; background: var(--gap); position: relative; }
+  .lamp .lv b i { position: absolute; left: 0; right: 0; bottom: 0; background: #ececec; }
+  .lamp .n { font-size: 13px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lamp .v { font-size: 11px; line-height: 14px; color: var(--ink-2); }
+  .rlib .item { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; cursor: default; padding: 12px 12px 14px 20px; }
+  .itemsel { text-align: left; border: 0; background: transparent; padding: 0; display: grid; gap: 2px; min-width: 0; }
+  .itemsel .nm { font-weight: 500; }
+  .itemsel .disp { margin-top: 6px; }
+
+  /* Dialoge */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: grid; place-items: center; z-index: 10; padding: 16px; box-sizing: border-box; }
+  .dialog { width: min(560px, 100%); max-height: 90vh; overflow: auto; background: var(--panel); color: var(--ink); border-radius: 24px; padding: 8px 24px 16px; box-sizing: border-box; }
+  .dialog.wide { width: min(760px, 100%); }
+  .dhead { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; }
+  .dhead h2 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 500; }
+  .sec2 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px 0 6px; }
+  .opt { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .opt > span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .opt small { color: var(--ink-2); font-size: 12px; line-height: 16px; }
+  .opt .fld { align-self: flex-start; }
+  .danger { margin: 20px 0 8px; padding: 14px 16px; border-radius: 12px; background: color-mix(in srgb, #e5484d 10%, transparent); display: flex; align-items: center; gap: 16px; justify-content: space-between; }
+  .danger > span { display: flex; flex-direction: column; gap: 4px; }
+  .danger small { color: var(--ink-2); font-size: 12px; line-height: 16px; }
+  .dfoot { display: flex; align-items: center; gap: 8px; padding: 16px 0 4px; flex-wrap: wrap; }
+  .tpls { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; }
+  .desc { margin: 4px 0 8px; }
+  .genlights { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 2px 16px; max-height: 280px; overflow: auto; padding: 4px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .pick { display: grid; grid-template-columns: auto 1fr; gap: 0 10px; align-items: center; padding: 8px 0; }
+  .pick input { accent-color: var(--acc); width: 18px; height: 18px; grid-row: 1 / span 2; }
+  .pick .lbl { grid-column: 2; }
+  .genparams { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 16px 0 4px; }
+  .par { display: flex; flex-direction: column; gap: 6px; }
+  .genparams .opt { border: 0; padding: 0; flex-basis: 100%; }
 `;
 
 customElements.define('fade-studio-card', FadeStudioCard);

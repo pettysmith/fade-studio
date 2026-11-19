@@ -2,7 +2,9 @@
 
 Sanfte, animierte Lichtabläufe für Home Assistant – geplant auf einer Zeitleiste mit einer Spur pro Lampe, wie in einem Videoschnittprogramm.
 
-![Zeitleiste](docs/screenshot.png)
+![Studio](docs/screenshot.png)
+
+Breit (Tablet quer, Desktop) zeigt die Karte das **Studio** zum Gestalten, schmal (Handy) die **Fernbedienung** zum Starten, Pausieren, Dimmen. Gestaltungsregeln: [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Idee
 
