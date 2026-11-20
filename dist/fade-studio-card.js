@@ -1650,7 +1650,7 @@ class FadeStudioCard extends HTMLElement {
         <div class="params">
           <div class="cell col1"><span class="lbl">Name</span><input class="fld name" id="name" value="${esc(s.name)}"></div>
           <div class="pgroup">
-          <div class="cell"><span class="lbl">Länge</span><span class="chips">${[15, 30, 45, 60]
+          <div class="cell wide2"><span class="lbl">Länge</span><span class="chips">${[15, 30, 45, 60]
             .map((v) => `<button class="chip mono ${s.length === v ? 'on' : ''}" data-len="${v}">${v}</button>`)
             .join('')}<input class="fld mono num" id="length" type="number" min="2" max="600" step="1" value="${r1(s.length)}" title="Länge in Sekunden"><span class="u">s</span></span></div>
           <div class="cell"><span class="lbl">Schleife</span><input type="checkbox" class="sw" id="loop" ${s.loop ? 'checked' : ''}></div>
@@ -1680,10 +1680,16 @@ class FadeStudioCard extends HTMLElement {
           <div class="row ruler"><div class="th"><span class="slbl">Spuren · ${nPlay}</span></div><div class="ln"><div class="rulerlane" id="ruler">${this._rulerHtml()}</div></div></div>
           ${s.tracks.map((tr, ti) => this._trackRowsHtml(tr, ti)).join('')}
           <div class="addrow">
-            <select class="fld" id="addSel">${lights
-              .map((l) => `<option value="${l.eid}">${esc(l.area ? l.area + ' · ' : '')}${esc(l.name)}${l.isGroup ? ' (Gruppe)' : ''}</option>`)
+            <select class="fld" id="addSel" title="Leuchte oder Gruppe für eine neue Spur">${[...new Set(lights.map((l) => l.area || 'Ohne Raum'))]
+              .map(
+                (a) =>
+                  `<optgroup label="${esc(a)}">${lights
+                    .filter((l) => (l.area || 'Ohne Raum') === a)
+                    .map((l) => `<option value="${l.eid}">${esc(l.name)}${l.isGroup ? ' · Gruppe' : ''}</option>`)
+                    .join('')}</optgroup>`
+              )
               .join('')}</select>
-            <button class="btn" id="addTrack">${this._ic('plus')}Spur</button>
+            <button class="gb" id="addTrack">${this._ic('plus')}Spur hinzufügen</button>
           </div>
           <div class="playhead" id="ph" title="Aktuelle Position der Wiedergabe"><b class="mono" id="phT"></b></div>
           <div class="guide" id="guide" title="Zeit des ausgewählten Punkts"><b class="mono" id="guideT"></b></div>
@@ -1761,7 +1767,7 @@ class FadeStudioCard extends HTMLElement {
         out += `<div class="row track sub ${selM ? 'sel' : ''}">
           <div class="th">
             <div class="nm2"><span class="nmt" title="${esc(m)}">${esc(mi.name)}</span>${ov ? `<button class="ib sm" data-reset="${ti}" data-member="${m}" title="Eigene Spur verwerfen – Lampe folgt wieder der Gruppe">${this._ic('restore')}</button>` : ''}</div>
-            <div class="meta">${ov ? `${seg(ov, mi, m)}${ikea(ov, mi, m)}<span class="tag">eigen</span>` : '<span class="slbl">folgt Gruppe · antippen für eigene Spur</span>'}</div>
+            <div class="meta">${ov ? `${seg(ov, mi, m)}${ikea(ov, mi, m)}<span class="tag">eigen</span>` : '<span class="slbl" title="In die Spur tippen, um dieser Leuchte eine eigene Spur zu geben">folgt Gruppe</span>'}</div>
           </div>
           <div class="ln"><div class="lane ${ov ? '' : 'ghost'}" data-lane="${ti}" data-member="${m}"></div></div>
         </div>`;
@@ -1779,30 +1785,31 @@ class FadeStudioCard extends HTMLElement {
     const order = [...tr.kfs].map((k, i) => [k.t, i]).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
     let tone = '<span class="lbl">Nur Helligkeit</span>';
     if (tr.mode === 'ct') {
-      const ks = [...new Set([2200, 2400, 2600, 2800, 3000, 3300, 3600, 4000, 4500, 5000, 5700, 6500].map((k) => clamp(k, info.minK, info.maxK)))];
+      const ks = [...new Set([2200, 2500, 2700, 3000, 3300, 3600, 4000, 4500, 5000, 6500].map((k) => clamp(k, info.minK, info.maxK)))];
       const near = ks.reduce((a, k) => (Math.abs(k - kf.k) < Math.abs(a - kf.k) ? k : a), ks[0]);
-      tone = `<div class="ctl"><span class="disp sw-row" style="grid-template-columns:repeat(${ks.length},1fr)">${ks
+      tone = `<div class="ctl"><span class="disp sw-row">${ks
         .map((k) => `<button class="${k === near ? 'sel' : ''}" data-k="${k}" style="background:${ktone(k)}" title="${k} K"></button>`)
         .join('')}</span><span class="mono val">${Math.round(kf.k)} K</span></div>`;
     } else if (tr.mode === 'color') {
-      const cs = ['#ff3b30', '#ff7a1a', '#ffb000', '#ffe14d', '#9be15d', '#2ee6a6', '#26c6da', '#2f7bff', '#5e5ce6', '#b05cff', '#ff4fa3', '#ffd2a8'];
-      tone = `<div class="ctl"><span class="disp sw-row" style="grid-template-columns:repeat(${cs.length},1fr)">${cs
+      const cs = ['#ff3b30', '#ff7a1a', '#ffb000', '#ffe14d', '#9be15d', '#2ee6a6', '#26c6da', '#2f7bff', '#b05cff', '#ff4fa3'];
+      const own = !cs.includes(kf.c);
+      tone = `<div class="ctl"><span class="disp sw-row">${cs
         .map((c) => `<button class="${c === kf.c ? 'sel' : ''}" data-c="${c}" style="background:${c}" title="${c}"></button>`)
-        .join('')}</span><input type="color" class="colorpick" id="kfC" value="${kf.c}" title="Eigene Farbe"></div>`;
+        .join('')}<label class="own ${own ? 'sel' : ''}" style="background:${kf.c}" title="Eigene Farbe wählen"><input type="color" id="kfC" value="${kf.c}"></label></span></div>`;
     }
     return `<div class="insp">
-      <div class="cell who col1"><span class="lbl">Punkt ${order.indexOf(sel.ki) + 1} von ${tr.kfs.length}</span><span class="n">${esc(info.name)}</span></div>
+      <div class="cell who col1"><span class="lbl" title="${esc(info.name)}">Punkt ${order.indexOf(sel.ki) + 1} von ${tr.kfs.length} · ${esc(info.name)}</span><span class="v"><input class="fld mono num" id="kfT" type="number" min="0" max="${this._show.length}" step="0.1" value="${r1(kf.t)}" title="Zeit des Punkts"><span class="u">s</span></span></div>
       <div class="ibody"><div class="irow">
-      <div class="cell"><span class="lbl">Zeit</span><span class="v"><input class="fld mono num" id="kfT" type="number" min="0" max="${this._show.length}" step="0.1" value="${r1(kf.t)}"><span class="u">s</span></span></div>
       <div class="cell"><span class="lbl">Helligkeit</span><div class="ctl"><input type="range" class="rng" id="kfB" min="0" max="100" step="1" value="${Math.round(kf.b)}"><span class="mono val" id="kfBv">${Math.round(kf.b)} %</span></div></div>
       <div class="cell grow2"><span class="lbl">${tr.mode === 'color' ? 'Farbe' : 'Weißton'}</span>${tone}</div>
-      </div>
-      <div class="acts">
-        <button class="btn" id="kfPreview" title="Zeigt diesen Zustand jetzt sofort an der Lampe">${this._ic('lightbulb-on-outline')}An Lampe zeigen</button>
-        ${tr.mode !== 'bri' ? `<button class="btn" id="kfAllTone" title="Setzt diesen ${tr.mode === 'color' ? 'Farbton' : 'Weißton'} zur selben Zeit auf allen anderen Spuren">${this._ic('palette-outline')}${tr.mode === 'color' ? 'Farbe' : 'Weißton'} auf alle Spuren übertragen</button>` : ''}
-        <button class="btn" id="kfAllBri" title="Setzt diese Helligkeit zur selben Zeit auf allen anderen Spuren">${this._ic('brightness-6')}Helligkeit auf alle Spuren übertragen</button>
-        <button class="btn" id="kfDel" title="Diesen Punkt löschen">${this._ic('delete-outline')}Löschen</button>
       </div></div>
+      <div class="acts">
+        <button class="gb" id="kfPreview" title="Zeigt diesen Zustand jetzt sofort an der Lampe">${this._ic('lightbulb-on-outline')}An Lampe zeigen</button>
+        ${tr.mode !== 'bri' ? `<button class="gb" id="kfAllTone" title="Setzt diesen ${tr.mode === 'color' ? 'Farbton' : 'Weißton'} zur selben Zeit auf allen anderen Spuren">${this._ic('palette-outline')}${tr.mode === 'color' ? 'Farbe' : 'Weißton'} auf alle Spuren übertragen</button>` : ''}
+        <button class="gb" id="kfAllBri" title="Setzt diese Helligkeit zur selben Zeit auf allen anderen Spuren">${this._ic('brightness-6')}Helligkeit auf alle Spuren übertragen</button>
+        <span class="grow"></span>
+        <button class="gb muted" id="kfDel" title="Diesen Punkt löschen">${this._ic('delete-outline')}Punkt löschen</button>
+      </div>
     </div>`;
   }
 
@@ -2099,6 +2106,7 @@ class FadeStudioCard extends HTMLElement {
     const d = id ? this._hass.states[`input_number.${id}_dimmer`] : null;
     if (dim && d && r.activeElement !== dim && this.shadowRoot.activeElement !== dim) {
       dim.value = d.state;
+      dim.style.setProperty('--p', `${d.state}%`);
       const v = r.querySelector('#dimv');
       if (v) v.textContent = `${Math.round(d.state)} %`;
     }
@@ -2279,6 +2287,12 @@ class FadeStudioCard extends HTMLElement {
       const cur = r.querySelector('#play')?.dataset.cur;
       if (cur && cur !== this._scriptEid()) await this._loadShow(cur);
       this._stop();
+    });
+    // Regler: Füllstand für die eigene Darstellung (ohne Browser-Rahmen)
+    r.querySelectorAll('.rng').forEach((el) => {
+      const set = () => el.style.setProperty('--p', `${((el.value - el.min) / (el.max - el.min)) * 100}%`);
+      set();
+      el.addEventListener('input', set);
     });
     on('#dimmer', 'input', (e) => {
       const v = r.querySelector('#dimv');
@@ -2774,6 +2788,83 @@ const STYLE = `
   .genparams { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 16px 0 4px; }
   .par { display: flex; flex-direction: column; gap: 6px; }
   .genparams .opt { border: 0; padding: 0; flex-basis: 100%; }
+
+  /* ================= Raster (verbindlich, siehe docs/DESIGN.md) =================
+     Grundmaß 8 px. Bänder: Kopf 72 · Parameter 72 · Lineal 40 · Spur 88 · Mitglied 64 ·
+     Spur hinzufügen 56 · Inspektor 72 + 48 · Fuß 64. Links und rechts gleiche Bandhöhen.
+     Bedienhöhen: 48 Tasten · 40 Felder/Knöpfe · 32 klein (Segmente, Chips, Aktionen). */
+  ha-card.fs { --u: 8px; --band: 72px; --foot: 64px; }
+  .hd, .transport { height: var(--band); min-height: 0; padding-top: 0; padding-bottom: 0; }
+  .m-remote .hd { height: var(--band); }
+  .lib .ft, .foot { height: var(--foot); min-height: 0; box-sizing: border-box; padding: 0 16px; flex-wrap: nowrap; align-items: center; }
+  .lib .ft { padding: 0 20px; }
+  .foot { padding-left: 24px; }
+  .item { min-height: 96px; padding: 12px 12px 12px 20px; }
+  .cell { min-height: var(--band); box-sizing: border-box; padding: 12px 16px; gap: 4px; }
+  .fld { height: 40px; }
+  .fld.num { width: 72px; }
+  .chip { height: 32px; }
+  .btn { height: 40px; border-radius: 10px; }
+  .ruler .ln { height: 40px; }
+  .row.track.top { min-height: 88px; }
+  .row.track.sub { min-height: 64px; }
+  .sub .lane { height: 48px; }
+  .addrow { height: 56px; box-sizing: border-box; padding: 0 0 0 24px; display: grid; grid-template-columns: calc(var(--col) - 40px) auto; column-gap: 16px; align-items: center; }
+  .addrow .fld { max-width: none; width: 100%; }
+  /* Schlanke Aktionsknöpfe (ohne Fläche) */
+  .gb { height: 32px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font-size: 13px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; --mdc-icon-size: 18px; }
+  .gb:hover { background: var(--well); }
+  .gb.muted { color: var(--ink-2); }
+  /* Inspektor: Werte-Zeile 72, Aktions-Zeile 48 */
+  .insp { grid-template-columns: var(--col) 1fr; }
+  .insp .who { grid-row: span 1; }
+  .irow { grid-template-columns: 136px minmax(200px, 1fr) minmax(320px, 1.4fr); min-height: var(--band); }
+  .insp .acts { height: 48px; box-sizing: border-box; padding: 0 8px 0 12px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; overflow-x: auto; }
+  .ctl { grid-template-columns: 1fr auto; gap: 12px; min-width: 0; }
+  .sw-row { display: inline-grid; grid-auto-flow: column; grid-auto-columns: 24px; gap: 2px; padding: 3px; height: 30px; box-sizing: border-box; justify-self: start; }
+  .sw-row button, .sw-row .own { width: 24px; height: 24px; min-width: 0; border-radius: 1px; border: 0; padding: 0; }
+  .sw-row .own { position: relative; display: block; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(255,255,255,.6); }
+  .sw-row .own input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+  .sw-row .sel { outline: 2px solid var(--acc); outline-offset: 1px; position: relative; z-index: 1; }
+  /* Regler ohne Browser-Rahmen: Schiene 4 px, Knopf 16 px */
+  .rng { -webkit-appearance: none; appearance: none; height: 24px; background: transparent; accent-color: unset; }
+  .rng::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--acc) var(--p, 50%), var(--line) var(--p, 50%)); }
+  .rng::-moz-range-track { height: 4px; border-radius: 2px; background: var(--line); }
+  .rng::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--acc); }
+  .rng::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; background: var(--acc); border: 0; }
+  .rng::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--acc); border: 0; }
+  .rng:disabled { opacity: .4; }
+  /* Fokus: einheitlich orange statt Browser-Blau */
+  button:focus, .fld:focus, .rng:focus, .sw:focus { outline: none; }
+  button:focus-visible, .fld:focus-visible, .rng:focus-visible, .sw:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+  /* Fernbedienung im selben Raster */
+  .rkeys { padding: 16px 20px; }
+  .rkeys .key { height: 64px; }
+  /* Linien zählen zur Höhe: jedes Band ist exakt ein Vielfaches des Grundmaßes */
+  .row, .hd, .transport, .addrow, .item, .cell, .acts, .foot, .ft { box-sizing: border-box; }
+  .row.track.top { height: 88px; min-height: 0; }
+  .row.track.sub { height: 64px; min-height: 0; }
+  .row.ruler { height: 40px; border-bottom: 1px solid var(--line); }
+  /* Parameter: Zellen in festen 72er-Zeilen, Linien statt Lücken */
+  .pgroup { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, auto)); grid-auto-rows: var(--band); }
+  .pgroup .cell { height: var(--band); min-height: 0; border-bottom: 1px solid var(--line); margin-bottom: -1px; }
+  .pgroup .cell.wide2 { grid-column: span 2; }
+  .params { overflow: hidden; }
+  .params .col1 { height: auto; }
+  /* Inspektor: Werte umbrechen in 72er-Zeilen statt überzulaufen */
+  .irow { display: flex; flex-wrap: wrap; min-height: var(--band); }
+  .irow .cell { height: var(--band); flex: 1 1 auto; border-bottom: 1px solid var(--line); margin-bottom: -1px; }
+  .irow .cell:first-child { flex: 1 1 180px; }
+  .irow .cell.grow2 { flex: 1 1 320px; }
+  .insp .who { height: var(--band); justify-content: center; }
+  .insp .who .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .insp .acts { grid-column: 1 / -1; flex-wrap: wrap; height: auto; min-height: 48px; padding: 4px 16px 4px 16px; overflow: visible; }
+  .insp { overflow: hidden; }
+  /* Zellenformel: 12 + Beschriftung 16 + 4 + Bedienelement 40 = 72 */
+  .insp .who { padding: 12px 16px 12px 24px; gap: 4px; justify-content: flex-start; }
+  .sub .th { padding: 6px 12px 6px 48px; gap: 0; }
+  .sub .th .nm2, .sub .th .meta { min-height: 26px; }
+  .cell > * { flex-shrink: 0; }
 `;
 
 customElements.define('fade-studio-card', FadeStudioCard);

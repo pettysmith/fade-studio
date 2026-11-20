@@ -47,16 +47,24 @@ Beide bestehen aus denselben Bausteinen: Bibliothek, Transport, Zeitleiste, Insp
 - Rechts davon der Inhalt (Parameter, Zeitleiste, Werte). Abstand zur Spalte 16 px.
 - Außenabstand 24 px (breit) bzw. 16 px (schmal).
 
-**Höhen**
-| Element | Höhe |
+**Höhen** (Grundmaß 8 px; Linien zählen zur Höhe)
+| Band | Höhe |
 |---|---|
-| Kopfzeile | 64 px |
-| Transport | 88 px |
-| Spur (oben) | 88 px, Lichtdisplay 72 px |
-| Spur (Gruppenmitglied) | 68 px, Lichtdisplay 52 px |
-| Zeilen in der Spur-Beschriftung | je 32 px (Name · Modus) |
-| Tasten groß / normal / klein | 48 / 40 / 32 px |
-| Felder, Chips | 36 / 32 px |
+| Kopf links (Bibliothek) und Transport rechts | 72 px – gleich hoch, eine durchgehende Linie |
+| Parameter | 72 px je Zeile (umbricht in ganzen Zeilen) |
+| Lineal | 40 px |
+| Spur | 88 px (Lichtdisplay 72 px) |
+| Gruppenmitglied | 64 px (Lichtdisplay 48 px) |
+| Spur hinzufügen | 56 px |
+| Inspektor | 72 px Werte + 48 px Aktionen |
+| Fuß links und rechts | 64 px – gleich hoch |
+| Eintrag in der Bibliothek | 96 px |
+
+**Zellenformel**: 12 px Rand + 16 px Beschriftung + 4 px + 40 px Bedienelement = 72 px.
+
+**Bedienhöhen**: Tasten 48 · Felder und Knöpfe 40 · klein (Segmente, Chips, Aktionen) 32.
+
+**Regler**: Schiene 4 px, Knopf 16 px, gefüllter Teil orange, kein Rahmen. **Fokus**: 2 px orange, 2 px Abstand.
 
 **Schrift** (Größe / Gewicht)
 | Rolle | |
