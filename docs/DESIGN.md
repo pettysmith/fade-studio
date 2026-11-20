@@ -106,7 +106,21 @@ Beide bestehen aus denselben Bausteinen: Bibliothek, Transport, Zeitleiste, Insp
 - Beschriftungen in der Sequenz-Zone: Monospace, Großbuchstaben, 10 px, Laufweite +0,08 em. Im Rahmen: normale Schrift, 12 px, Satzschreibung.
 - Zeitanzeige groß in Monospace.
 
-## Bedienelemente
+## Bedienelemente (System)
+
+| Art | Aussehen | Einsatz |
+|---|---|---|
+| Primär | dunkel gefüllt, 36 px | genau einer je Ansicht: Speichern |
+| Sekundär | 1-px-Linie, keine Fläche, 36 px | Neu, Vorlage, Verwerfen |
+| Leise | nur Text + Symbol, Hover orange | Aktionen im Inspektor, Spur hinzufügen, Ablauf löschen |
+| Taste | 1-px-Linie, 40 px; Play orange gefüllt, solange es läuft | Transport |
+| Symbol | rund, ohne Linie, Nebentextfarbe; aktiv orange | Schleife, Optionen, Einstellungen |
+| Feld | 1-px-Linie, Fokus orange | Zahlen, Auswahl |
+| Regler | 2-px-Strich, orange bis zum Wert, Fader-Knopf 6 × 18 px | Helligkeit |
+
+Spur-Werkzeuge (Griff, Entfernen) erscheinen mit Maus nur bei Hover oder an der gewählten Spur; auf Touch-Geräten immer.
+
+## Bedienelemente (Details)
 
 - **Schalter** = Pille wie in Home Assistant; an = orange, aus = grau.
 - **Segmentwahl** = Textlabels, das aktive mit orangem Strich darunter.

@@ -1616,7 +1616,7 @@ class FadeStudioCard extends HTMLElement {
           .join('')}
         ${ids.length ? '' : '<div class="empty lbl">Noch keine Abläufe.</div>'}
       </div>
-      <div class="ft"><button class="btn" id="newShow">${this._ic('plus')}Neu</button><button class="btn" id="openGen">${this._ic('plus')}Vorlage</button></div>
+      <div class="ft"><button class="btn sec" id="newShow">${this._ic('plus')}Neu</button><button class="btn sec" id="openGen">${this._ic('plus')}Vorlage</button></div>
     </aside>`;
   }
 
@@ -1700,10 +1700,10 @@ class FadeStudioCard extends HTMLElement {
         ${this._inspHtml()}
 
         <div class="foot">
-          ${s.id ? `<button class="btn txt muted" id="delete" title="Diesen Ablauf mit Skript und Regler löschen">Ablauf löschen</button>` : ''}
+          ${s.id ? `<button class="gb muted" id="delete" title="Diesen Ablauf mit Skript und Regler löschen">Ablauf löschen</button>` : ''}
           <span class="lbl" id="msg">${esc(this._msg)}</span>
           <span class="grow"></span>
-          <button class="btn txt" id="discard" ${this._dirty ? '' : 'disabled'} title="Ungespeicherte Änderungen zurücknehmen">Verwerfen</button>
+          <button class="btn sec" id="discard" ${this._dirty ? '' : 'disabled'} title="Ungespeicherte Änderungen zurücknehmen">Verwerfen</button>
           <button class="btn pri" id="save" title="Ablauf in Home Assistant speichern – erst dann spielt er so">${this._dirty ? 'Speichern •' : 'Speichern'}</button>
         </div>
       </section>
@@ -2918,6 +2918,50 @@ const STYLE = `
   .guide { z-index: 4; }
   .guide b { top: 16px; }
   .item { height: 80px; min-height: 0; }
+
+  /* ===== Bedienelemente: ein System (docs/DESIGN.md) =====
+     Primär: dunkel gefüllt, genau einer je Ansicht (Speichern).
+     Sekundär: 1-px-Linie, keine Fläche.  Leise: nur Text + Symbol.
+     Tasten (Transport): Linie; Play orange gefüllt, solange es läuft.
+     Regler: 2-px-Strich, orange bis zum Wert, schmaler Fader-Knopf. */
+  .btn { height: 36px; padding: 0 14px; border-radius: 8px; font-size: 13px; font-weight: 500; background: transparent; border: 1px solid var(--line); color: var(--ink); }
+  .btn.sec:hover { border-color: var(--ink-2); }
+  .btn.pri { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+  .btn.pri:disabled, .btn.sec:disabled { opacity: .35; }
+  .btn.err { border-color: color-mix(in srgb, #e5484d 50%, transparent); }
+  .key, .toolbar .key { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+  .key:hover:not(:disabled) { border-color: var(--ink-2); }
+  .key.on, .toolbar .key.on { background: var(--acc); border-color: var(--acc); color: var(--acc-ink); }
+  .rkeys .key { border-radius: 12px; }
+  .ib { width: 36px; height: 36px; color: var(--ink-2); }
+  .ib:hover { color: var(--ink); background: transparent; }
+  .gb:hover { background: transparent; color: var(--acc); }
+  .gb.muted:hover { color: var(--ink); }
+  /* Länge: Text mit Pfeil statt Formularfläche */
+  #lenSel { background: transparent; border: 0; padding: 0 4px; width: auto; color: var(--ink); cursor: pointer; }
+  #lenSel:hover { color: var(--acc); }
+  /* Fader */
+  .rng { height: 20px; }
+  .rng::-webkit-slider-runnable-track { height: 2px; border-radius: 0; background: linear-gradient(to right, var(--acc) var(--p, 50%), var(--line) var(--p, 50%)); }
+  .rng::-moz-range-track { height: 2px; border-radius: 0; background: var(--line); }
+  .rng::-moz-range-progress { height: 2px; border-radius: 0; background: var(--acc); }
+  .rng::-webkit-slider-thumb { width: 6px; height: 18px; margin-top: -8px; border-radius: 1px; background: var(--ink); }
+  .rng::-moz-range-thumb { width: 6px; height: 18px; border-radius: 1px; background: var(--ink); }
+  .rng:hover::-webkit-slider-thumb, .rng:active::-webkit-slider-thumb { background: var(--acc); }
+  .rng:hover::-moz-range-thumb, .rng:active::-moz-range-thumb { background: var(--acc); }
+  /* Spur-Werkzeuge nur bei Bedarf (mit Maus); auf Touch immer sichtbar */
+  @media (hover: hover) {
+    .row.track .grip, .row.track .del { opacity: 0; transition: opacity .12s; }
+    .row.track:hover .grip, .row.track:hover .del, .row.track.sel .grip, .row.track.sel .del { opacity: 1; }
+  }
+  .del { color: var(--ink-2); }
+  /* Chips: Linie, aktiv orange */
+  .chip { border-radius: 6px; }
+  /* Felder und Kacheln: Linie statt Fläche */
+  .fld { background: transparent; border: 1px solid var(--line); }
+  .fld:hover { border-color: var(--ink-2); }
+  .fld:focus { border-color: var(--acc); }
+  .lamp { background: transparent; border: 1px solid var(--line); }
 `;
 
 customElements.define('fade-studio-card', FadeStudioCard);
