@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.7.4';
+const FS_VERSION = '0.8.0';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
@@ -138,7 +138,8 @@ function lightInfo(hass, eid) {
     isGroup,
     members,
     ct: modes.includes('color_temp'),
-    color: modes.some((m) => ['hs', 'xy', 'rgb', 'rgbw', 'rgbww'].includes(m)),
+    // IKEA „WS" (White Spectrum) kann nur Weißtöne, meldet sich über Matter aber teils als farbfähig. „CWS" = Farbe.
+    color: modes.some((m) => ['hs', 'xy', 'rgb', 'rgbw', 'rgbww'].includes(m)) && !(/\bWS\b/.test(dev?.model || '') && !/CWS/.test(dev?.model || '')),
     minK: a.min_color_temp_kelvin || 2000,
     maxK: a.max_color_temp_kelvin || 6500,
     ikea: /ikea/i.test(dev?.manufacturer || '') || /tradfri|kajplats|ikea/i.test(dev?.model || ''),
@@ -175,7 +176,7 @@ function playTracks(hass, show) {
     }
   }
   // Matter-Lampen blenden aus „aus" selbst weich ein – ein Vorab-Einschalten auf 1 % lässt sie blinken.
-  return hass ? out.map((t) => ({ ...t, noPreOn: lightInfo(hass, t.entity).matter })) : out;
+  return hass ? out.map((t) => ({ ...t, noPreOn: lightInfo(hass, t.entity).matter, ikea: lightInfo(hass, t.entity).ikea })) : out;
 }
 
 /**
@@ -392,24 +393,37 @@ function trackBranch(show, tr, dimmer, ti, o) {
   };
 }
 
+/**
+ * Zwei Schnappschüsse je Ablauf: <id>_before (alle übrigen Lampen, weich wiederhergestellt) und
+ * <id>_before_ikea (IKEA-Lampen, ohne Überblendung – Ton und Helligkeit zugleich überblenden lässt sie blinken).
+ * snapTpl ist ein Jinja-Ausdruck, der 'scene.<id>_before' ergibt.
+ */
+function snapRestore(snapTpl, fade) {
+  return [
+    {
+      if: tpl(`{{ state_attr(${snapTpl}, 'entity_id') is not none }}`),
+      then: [{ action: 'scene.turn_on', target: { entity_id: `{{ ${snapTpl} }}` }, data: { transition: fade } }],
+    },
+    {
+      if: tpl(`{{ state_attr(${snapTpl} ~ '_ikea', 'entity_id') is not none }}`),
+      then: [{ action: 'scene.turn_on', target: { entity_id: `{{ ${snapTpl} ~ '_ikea' }}` }, data: { transition: 0 } }],
+    },
+  ];
+}
+function snapDelete(snapTpl) {
+  return [`${snapTpl}`, `${snapTpl} ~ '_ikea'`].map((x) => ({
+    if: tpl(`{{ state_attr(${x}, 'entity_id') is not none }}`),
+    then: [{ action: 'scene.delete', target: { entity_id: `{{ ${x} }}` }, continue_on_error: true }],
+  }));
+}
+
 function endActions(show, snap, lights) {
   const fade = Math.max(0, show.end?.fade ?? 5);
-  const exists = `{{ state_attr('${snap}', 'entity_id') is not none }}`;
-  const delSnap = {
-    if: tpl(exists),
-    then: [{ action: 'scene.delete', target: { entity_id: snap }, continue_on_error: true }],
-  };
+  const q = `'${snap}'`;
+  const delSnap = { sequence: snapDelete(q) };
   switch (show.end?.mode) {
     case 'restore':
-      return [
-        {
-          if: tpl(exists),
-          then: [
-            { action: 'scene.turn_on', target: { entity_id: snap }, data: { transition: fade } },
-            { action: 'scene.delete', target: { entity_id: snap }, continue_on_error: true },
-          ],
-        },
-      ];
+      return [...snapRestore(q, fade), ...snapDelete(q)];
     case 'off':
       return [{ action: 'light.turn_off', target: { entity_id: lights }, data: { transition: fade } }, delSnap];
     case 'scene':
@@ -451,13 +465,8 @@ function buildScript(show, settings = DEFAULT_SETTINGS, play = null) {
             for_each: '{{ fs_others }}',
             sequence: [
               { variables: { fs_snap: `{{ 'scene.' ~ repeat.item.split('.')[1] ~ '${SNAP_SUFFIX}' }}` } },
-              {
-                if: tpl("{{ state_attr(fs_snap, 'entity_id') is not none }}"),
-                then: [
-                  { action: 'scene.turn_on', target: { entity_id: '{{ fs_snap }}' }, data: { transition: 1 } },
-                  { action: 'scene.delete', target: { entity_id: '{{ fs_snap }}' }, continue_on_error: true },
-                ],
-              },
+              ...snapRestore('fs_snap', 1),
+              ...snapDelete('fs_snap'),
             ],
           },
         },
@@ -468,9 +477,14 @@ function buildScript(show, settings = DEFAULT_SETTINGS, play = null) {
   // Zustand vor dem Start immer merken – für „vorherigen Zustand wiederherstellen",
   // für den Auto-Stopp und damit „Alles entfernen" sauber zurücksetzen kann.
   // Ein vorhandener Schnappschuss bleibt (Neustart während des Laufs). Veraltete räumt die Auto-Stopp-Automation weg.
+  const ikeaLights = [...new Set(tracks.filter((t) => t.ikea).map((t) => t.entity))];
+  const mainLights = lights.filter((l) => !ikeaLights.includes(l));
   seq.push({
-    if: tpl(`{{ state_attr('${snap}', 'entity_id') is none }}`),
-    then: [{ action: 'scene.create', data: { scene_id: snapId, snapshot_entities: lights } }],
+    if: tpl(`{{ state_attr('${snap}', 'entity_id') is none and state_attr('${snap}_ikea', 'entity_id') is none }}`),
+    then: [
+      ...(mainLights.length ? [{ action: 'scene.create', data: { scene_id: snapId, snapshot_entities: mainLights } }] : []),
+      ...(ikeaLights.length ? [{ action: 'scene.create', data: { scene_id: `${snapId}_ikea`, snapshot_entities: ikeaLights } }] : []),
+    ],
   });
   const o = { stopOnOff: settings.stop_external_off !== false, scriptEid: `script.${id}`, snap };
   const peak = Math.max(1, ...tracks.flatMap((t) => (t.kfs || []).map((k) => Number(k.b) || 0)));
@@ -519,11 +533,8 @@ function buildAutomation(settings, shows) {
   if (Object.keys(shows).length)
     triggers.push({ trigger: 'state', entity_id: Object.keys(shows).sort(), from: 'on', to: 'off', id: 'ended', for: { minutes: 30 } });
   const snapVars = { variables: { snap: `{{ 'scene.' ~ repeat.item.split('.')[1] ~ '${SNAP_SUFFIX}' }}` } };
-  const delSnap = {
-    if: tpl('{{ state_attr(snap, "entity_id") is not none }}'),
-    then: [{ action: 'scene.delete', target: { entity_id: '{{ snap }}' }, continue_on_error: true }],
-  };
-  const delSnapTop = { ...delSnap };
+  const delSnap = { sequence: snapDelete('snap') };
+  const delSnapTop = { sequence: snapDelete('snap') };
   return {
     id: AUTO_ID,
     alias: 'Fade Studio: Auto-Stopp',
@@ -582,8 +593,8 @@ function buildAutomation(settings, shows) {
                           sequence: [{ action: 'light.turn_off', target: { entity_id: '{{ shows[repeat.item] }}' }, data: { transition: 3 } }],
                         },
                         {
-                          conditions: tpl("{{ fade_studio_settings.away_action == 'restore' and state_attr(snap, 'entity_id') is not none }}"),
-                          sequence: [{ action: 'scene.turn_on', target: { entity_id: '{{ snap }}' }, data: { transition: 3 } }],
+                          conditions: tpl("{{ fade_studio_settings.away_action == 'restore' }}"),
+                          sequence: snapRestore('snap', 3),
                         },
                       ],
                     },
@@ -629,7 +640,7 @@ const ctKf = (info, t, b, k) => {
 const wrap = (t, L) => r1(((t % L) + L) % L);
 const sortKfs = (kfs) => kfs.sort((a, b) => a.t - b.t);
 /** Kann diese Lampe (laut Einstellungen) Farben zeigen? */
-const showsColor = (info, ctx) => info.color && !info.isGroup && !(info.ikea && ctx?.ikeaColor !== 'color');
+const showsColor = (info) => info.color && !info.isGroup;
 
 /** Ambient Drift: zeitversetztes Gleiten, abwechselnd heller (etwas kühler) und dunkler (wärmer). */
 function genDrift(hass, eids, p, ctx) {
@@ -1187,9 +1198,10 @@ class FadeStudioCard extends HTMLElement {
     const snap = `scene.${id}${SNAP_SUFFIX}`;
     const running = h.states[se]?.state === 'on';
     if (h.states[se]) await h.callService('script', 'turn_off', { entity_id: se });
-    if (h.states[snap]) {
-      if (running) await h.callService('scene', 'turn_on', { entity_id: snap, transition: 2 }).catch(() => {});
-      await h.callService('scene', 'delete', { entity_id: snap }).catch(() => {});
+    for (const [sc, tr] of [[snap, 2], [`${snap}_ikea`, 0]]) {
+      if (!h.states[sc]) continue;
+      if (running) await h.callService('scene', 'turn_on', { entity_id: sc, transition: tr }).catch(() => {});
+      await h.callService('scene', 'delete', { entity_id: sc }).catch(() => {});
     }
   }
 
@@ -1283,7 +1295,7 @@ class FadeStudioCard extends HTMLElement {
     try {
       // Erst alles anhalten und zurücksetzen, dann löschen.
       for (const id of ids) await this._stopAndRestore(id);
-      for (const e of Object.keys(this._hass.states).filter((x) => x.startsWith('scene.' + PREFIX) && x.endsWith(SNAP_SUFFIX)))
+      for (const e of Object.keys(this._hass.states).filter((x) => x.startsWith('scene.' + PREFIX) && x.includes(SNAP_SUFFIX)))
         await this._hass.callService('scene', 'delete', { entity_id: e }).catch(() => {});
       for (const id of ids) await this._deleteShowById(id);
       if (this._autoEid()) await this._hass.callApi('DELETE', `config/automation/config/${AUTO_ID}`).catch(() => {});
@@ -1512,12 +1524,24 @@ class FadeStudioCard extends HTMLElement {
     const h = this._hass;
     const dark = h.themes?.darkMode !== false;
     const mode = this._mode();
+    // Scroll-Positionen merken – sonst springt die Zeitleiste bei jedem Klick nach oben
+    const keep = ['#tl', '.items', '.dialog', '.genlights'].map((q) => [q, this.shadowRoot.querySelector(q)?.scrollTop || 0]);
+    const winY = window.scrollY;
     this.shadowRoot.innerHTML = `<style>${STYLE}</style>
       <ha-card class="fs ${dark ? 'dark' : 'light'} m-${mode} ${this._wide() ? 'wide' : 'narrow'}">
         ${mode === 'studio' ? this._studioHtml() : this._remoteHtml()}
         ${this._gen ? this._genHtml() : ''}
         ${SESSION.settingsOpen ? this._settingsHtml() : ''}
       </ha-card>`;
+    // ha-card zeichnet seinen Inhalt erst im nächsten Frame – Scroll-Positionen dann setzen
+    const restore = () =>
+      keep.forEach(([q, top]) => {
+        const el = this.shadowRoot.querySelector(q);
+        if (el && top) el.scrollTop = top;
+      });
+    restore();
+    requestAnimationFrame(restore);
+    if (window.scrollY !== winY) window.scrollTo({ top: winY });
     this._bind();
     this.shadowRoot.querySelector('#tl')?.addEventListener('scroll', () => this._placeGuide(), { passive: true });
     this._renderLanes();
@@ -1553,7 +1577,7 @@ class FadeStudioCard extends HTMLElement {
     const s = this._show;
     const h = this._hass;
     const dimmer = s.id ? h.states[`input_number.${s.id}_dimmer`] : null;
-    const scenes = Object.keys(h.states).filter((e) => e.startsWith('scene.') && !e.endsWith(SNAP_SUFFIX));
+    const scenes = Object.keys(h.states).filter((e) => e.startsWith('scene.') && !(e.startsWith('scene.' + PREFIX) && e.includes(SNAP_SUFFIX)));
     const lights = this._lights();
     const nPlay = playTracks(h, s).length;
     const back = !this._wide() ? `<div class="hd"><button class="ib" id="toRemote" title="Zur Fernbedienung">${this._ic('arrow-left')}</button><span class="title">${esc(s.name)}</span><button class="ib" id="settings" title="Einstellungen">${this._ic('tune-variant')}</button></div>` : '';
@@ -1668,14 +1692,15 @@ class FadeStudioCard extends HTMLElement {
     const members = info.members;
     const isGroup = members.length > 0;
     const selT = this._sel && this._sel.ti === ti && !this._sel.m;
-    let out = `<div class="row track ${selT ? 'sel' : ''}">
+    let out = `<div class="row track top ${selT ? 'sel' : ''}" data-ti="${ti}">
       <div class="th">
         <div class="nm2">
+          <span class="grip" data-drag="${ti}" title="Ziehen zum Umsortieren">${this._ic('drag-vertical')}</span>
           ${isGroup ? `<button class="ib sm" data-expand="${ti}" title="${tr.expanded ? 'Einzelne Lampen ausblenden' : 'Einzelne Lampen zeigen'}">${this._ic(tr.expanded ? 'chevron-down' : 'chevron-right')}</button>` : ''}
-          <span class="nmt" title="${esc(tr.entity)}">${info.available ? '' : '⚠ '}${esc(info.name)}</span>
+          <span class="nmt" title="${esc(tr.entity)}">${esc(info.name)}</span>
           <button class="ib sm del" data-deltrack="${ti}" title="Spur entfernen">${this._ic('close')}</button>
         </div>
-        <div class="meta">${seg(tr, info)}${ikea(tr, info)}${isGroup ? `<span class="tag">Gruppe · ${members.length}</span>` : ''}</div>
+        <div class="meta">${seg(tr, info)}${ikea(tr, info)}${isGroup ? `<span class="tag">Gruppe · ${members.length}</span>` : ''}${info.available ? '' : '<span class="tag warn" title="Home Assistant erreicht diese Lampe gerade nicht – ohne Strom oder ohne Verbindung">nicht erreichbar</span>'}</div>
       </div>
       <div class="ln"><div class="lane" data-lane="${ti}"></div></div>
     </div>`;
@@ -2042,6 +2067,62 @@ class FadeStudioCard extends HTMLElement {
     ev.preventDefault();
   }
 
+  /** Spur am Griff ziehen und an anderer Stelle ablegen. */
+  _dragTrack(ev, from) {
+    const r = this.shadowRoot;
+    const tl = r.querySelector('#tl');
+    const rows = [...r.querySelectorAll('.row.track.top')];
+    const src = rows.find((x) => Number(x.dataset.ti) === from);
+    if (!tl || !src) return;
+    ev.preventDefault();
+    src.classList.add('dragging');
+    const line = document.createElement('div');
+    line.className = 'dropline';
+    tl.appendChild(line);
+    let to = from;
+    const move = (e) => {
+      const tlr = tl.getBoundingClientRect();
+      to = rows.length;
+      for (let i = 0; i < rows.length; i++) {
+        const b = rows[i].getBoundingClientRect();
+        if (e.clientY < b.top + b.height / 2) {
+          to = i;
+          break;
+        }
+      }
+      const ref = rows[Math.min(to, rows.length - 1)].getBoundingClientRect();
+      const y = to < rows.length ? ref.top : ref.bottom;
+      line.style.top = `${y - tlr.top + tl.scrollTop - 1}px`;
+      // am Rand automatisch scrollen
+      if (e.clientY < tlr.top + 40) tl.scrollTop -= 12;
+      else if (e.clientY > tlr.bottom - 40) tl.scrollTop += 12;
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      line.remove();
+      src.classList.remove('dragging');
+      const target = to > from ? to - 1 : to;
+      if (target === from) return;
+      const s = this._show;
+      const [tr] = s.tracks.splice(from, 1);
+      s.tracks.splice(target, 0, tr);
+      if (this._sel) {
+        const old = this._sel.ti;
+        if (old === from) this._sel.ti = target;
+        else if (from < old && target >= old) this._sel.ti = old - 1;
+        else if (from > old && target <= old) this._sel.ti = old + 1;
+      }
+      this._dirty = true;
+      this._render();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    move(ev);
+  }
+
   _markDirty() {
     this._dirty = true;
     const b = this.shadowRoot.querySelector('#save');
@@ -2130,6 +2211,7 @@ class FadeStudioCard extends HTMLElement {
       this._dirty = true;
       this._render();
     });
+    r.querySelectorAll('[data-drag]').forEach((el) => el.addEventListener('pointerdown', (ev) => this._dragTrack(ev, Number(el.dataset.drag))));
     all('[data-expand]', (el) => {
       const tr = s.tracks[Number(el.dataset.expand)];
       tr.expanded = !tr.expanded;
@@ -2440,6 +2522,10 @@ const STYLE = `
   .del { opacity: .6; }
   .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .sub .th { padding-left: 48px; }
+  .grip { width: 24px; height: 32px; display: grid; place-items: center; color: var(--ink-2); cursor: grab; touch-action: none; flex: none; margin-left: -8px; --mdc-icon-size: 18px; }
+  .tag.warn { border-color: var(--acc); color: var(--acc); }
+  .dropline { position: absolute; left: 0; right: 0; height: 2px; background: var(--acc); pointer-events: none; z-index: 4; }
+  .track.dragging { opacity: .45; }
   .sub .nmt { font-weight: 400; }
   .lane { position: relative; height: 72px; background: var(--disp); border-radius: 2px; touch-action: none; }
   .sub .lane { height: 52px; }
