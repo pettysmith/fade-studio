@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.7.3';
+const FS_VERSION = '0.7.4';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
@@ -1129,13 +1129,21 @@ class FadeStudioCard extends HTMLElement {
     if (running.length) await h().callService('script', 'turn_off', { entity_id: running });
     await h().callService('scene', 'create', { scene_id: 'fade_studio_diag_before', snapshot_entities: lamps });
     const info = Object.fromEntries(lamps.map((e) => [e, lightInfo(h(), e)]));
+    const call = (d) => h().callService('light', 'turn_on', d).catch((err) => (SESSION.diag.err = String(err?.message || err)));
     const set = (b, warm, tr) =>
       Promise.all(
-        lamps.map((e) => {
+        lamps.map(async (e) => {
           const i = info[e];
+          const k = warm ? i.minK : i.maxK;
+          // IKEA wie im Ablauf: erst Ton, dann Helligkeit – beides zugleich setzen viele IKEA-Lampen nicht um
+          if (i.ikea && i.ct) {
+            await call({ entity_id: e, color_temp_kelvin: k, transition: tr / 2 });
+            await sleep((tr / 2) * 1000 + 400);
+            return call({ entity_id: e, brightness_pct: b, transition: tr / 2 });
+          }
           const d = { entity_id: e, brightness_pct: b, transition: tr };
-          if (i.ct) d.color_temp_kelvin = warm ? i.minK : i.maxK;
-          return h().callService('light', 'turn_on', d).catch((err) => (SESSION.diag.err = String(err?.message || err)));
+          if (i.ct) d.color_temp_kelvin = k;
+          return call(d);
         })
       );
     await set(5, true, 0);
@@ -1153,7 +1161,8 @@ class FadeStudioCard extends HTMLElement {
       const bri = b.b - a.b > 120 ? 'ja' : b.b - a.b > 20 ? 'schwach' : 'nein';
       const tone = !i.ct ? '–' : a.k && b.k && b.k - a.k > 500 ? 'ja' : 'nein';
       const plat = h().entities?.[e]?.platform || '?';
-      return { name: i.name, plat, bri, tone, detail: `${Math.round((a.b / 255) * 100)} → ${Math.round((b.b / 255) * 100)} %${i.ct ? ` · ${a.k ?? '?'} → ${b.k ?? '?'} K` : ''}` };
+      if (b.on === 'unavailable' || a.on === 'unavailable') return { name: i.name, plat, bri: 'nicht erreichbar', tone: '–', detail: 'Lampe ohne Strom oder Verbindung' };
+      return { name: i.name, plat, bri, tone, detail: `${Math.round((a.b / 255) * 100)} → ${Math.round((b.b / 255) * 100)} %${i.ct ? ` · ${a.k ?? '?'} → ${b.k ?? '?'} K` : ''}${i.ikea ? ' · nacheinander' : ''}` };
     });
     if (this._show.id) {
       try {
@@ -1510,6 +1519,7 @@ class FadeStudioCard extends HTMLElement {
         ${SESSION.settingsOpen ? this._settingsHtml() : ''}
       </ha-card>`;
     this._bind();
+    this.shadowRoot.querySelector('#tl')?.addEventListener('scroll', () => this._placeGuide(), { passive: true });
     this._renderLanes();
     this._updateStatus();
     requestAnimationFrame(() => this._renderLanes());
@@ -1635,6 +1645,9 @@ class FadeStudioCard extends HTMLElement {
         out += `<span class="tlab mono" style="left:${(tt / L) * 100}%;${tt === 0 ? 'transform:none' : last ? 'transform:translateX(-100%)' : ''}">${last ? `${tt} s` : tt}</span>`;
       }
     }
+    // Ende immer beschriften, auch wenn die Länge kein Vielfaches des Rasters ist
+    if (Math.abs(L / major - Math.round(L / major)) > 0.001)
+      out += `<i class="tick M" style="left:100%"></i><span class="tlab mono" style="left:100%;transform:translateX(-100%)">${r1(L)} s</span>`;
     return out;
   }
 
@@ -1826,7 +1839,7 @@ class FadeStudioCard extends HTMLElement {
       <div class="opt"><span>Lampen dieses Ablaufs testen<small>Wechselt ca. 6 s kräftig zwischen dunkel/warm und hell/kühl, misst die Reaktion jeder Lampe und stellt danach den vorherigen Zustand wieder her.</small></span><button class="btn" id="diag" ${SESSION.diag?.running ? 'disabled' : ''}>${SESSION.diag?.running ? 'Teste …' : 'Testen'}</button></div>
       ${
         SESSION.diag && !SESSION.diag.running
-          ? `<table class="diag"><tr><th>Lampe</th><th>Anbindung</th><th>Helligkeit</th><th>Weißton</th><th>Werte</th></tr>${SESSION.diag.rows
+          ? `<p class="lbl">Werte so, wie Home Assistant sie meldet. ZHA meldet oft sofort den Zielwert – maßgeblich ist, was du an der Lampe siehst.</p><table class="diag"><tr><th>Lampe</th><th>Anbindung</th><th>Helligkeit</th><th>Weißton</th><th>Werte</th></tr>${SESSION.diag.rows
               .map((r) => `<tr><td>${esc(r.name)}</td><td class="mono">${esc(r.plat)}</td><td class="${r.bri === 'ja' ? '' : 'bad'}">${r.bri}</td><td class="${r.tone === 'nein' ? 'bad' : ''}">${r.tone}</td><td class="mono">${esc(r.detail)}</td></tr>`)
               .join('')}</table><p class="lbl">${esc(SESSION.diag.trace || '')}${SESSION.diag.err ? ` Fehler beim Senden: ${esc(SESSION.diag.err)}` : ''}</p>`
           : ''
@@ -1895,7 +1908,8 @@ class FadeStudioCard extends HTMLElement {
     const rr = ruler.getBoundingClientRect();
     const lanes = r.querySelectorAll('.lane[data-lane]');
     const bottom = lanes.length ? lanes[lanes.length - 1].getBoundingClientRect().bottom : rr.bottom;
-    return { left: rr.left - a.left, width: rr.width, top: rr.top - a.top, height: bottom - rr.top };
+    // Spurbereich kann scrollen: Position im Inhalt = sichtbare Position + Scroll-Versatz
+    return { left: rr.left - a.left + tl.scrollLeft, width: rr.width, top: rr.top - a.top + tl.scrollTop, height: bottom - rr.top };
   }
 
   _placeGuide() {
@@ -2265,10 +2279,13 @@ class FadeStudioCard extends HTMLElement {
         if (!g.lights.length) return alert('Bitte mindestens eine Lampe wählen.');
         const T = TEMPLATES[g.type];
         const res = T.build(this._hass, g.lights, g.p, this._genCtx());
-        s.length = res.length;
-        s.tracks = res.tracks;
-        if (s.name === 'Neuer Ablauf' || Object.values(TEMPLATES).some((x) => x.name === s.name)) s.name = T.name;
-        s.loop = true;
+        // Eine Vorlage erzeugt immer einen neuen Ablauf; gespeicherte Abläufe bleiben unberührt.
+        if (s.id || s.tracks.length) this._newShow();
+        const ns = this._show;
+        ns.length = res.length;
+        ns.tracks = res.tracks;
+        ns.name = T.name;
+        ns.loop = true;
         this._gen = null;
         this._sel = null;
         this._dirty = true;
@@ -2368,7 +2385,12 @@ const STYLE = `
   .seg button.on { color: var(--ink); border-color: var(--acc); }
 
   /* Studio */
-  .studio { display: grid; grid-template-columns: 272px 1fr; min-height: 640px; }
+  .studio { display: grid; grid-template-columns: 272px 1fr; min-height: 560px; }
+  .wide .studio { height: calc(100dvh - var(--header-height, 56px) - 32px); }
+  .wide .main { overflow: hidden; }
+  .wide .tl { flex: 1; overflow: auto; min-height: 120px; }
+  .wide .ruler { position: sticky; top: 0; z-index: 3; background: var(--panel); }
+  .wide .lib { overflow: hidden; }
   .narrow .studio { grid-template-columns: 1fr; }
   .lib { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
   .items { flex: 1; overflow: auto; }
