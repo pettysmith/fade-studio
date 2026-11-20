@@ -5,12 +5,12 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.8.1';
+const FS_VERSION = '0.9.0';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
 const AUTO_ID = 'fade_studio_autostop';
-const DEFAULT_SETTINGS = { ikea_mode: 'split', ikea_color: 'white', stop_away: true, away_action: 'off', stop_external_off: true, off_action: 'all' };
+const DEFAULT_SETTINGS = { stop_away: true, away_action: 'off', stop_external_off: true, off_action: 'all', profiles: {} };
 
 /* ------------------------------------------------------------------ */
 /* Hilfsfunktionen                                                     */
@@ -119,8 +119,46 @@ function stateAt(kfs, L, loop, t) {
 
 
 /* ------------------------------------------------------------------ */
-/* Lampen-Infos aus Home Assistant                                    */
+/* Leuchten: Fähigkeiten und Profile                                   */
 /* ------------------------------------------------------------------ */
+/*
+ * Was eine Lampe kann, kommt ausschließlich aus dem, was sie an Home Assistant meldet
+ * (supported_color_modes, Weißton-Bereich). Keine Annahmen aus Namen.
+ *
+ * Wie eine Lampe angesteuert wird, regelt ihr Profil. Ein Profil gilt für ein Modell und ist
+ * eindeutig über Hersteller + Modellkennung (model_id, sonst Modellname) – nicht über den Lampennamen.
+ * Standards je Hersteller stehen in PROFILE_RULES; jede Einstellung lässt sich im Reiter „Leuchten"
+ * überschreiben und wird in den Einstellungen gespeichert.
+ */
+const PROFILE_FIELDS = {
+  colors: 'Farben verwenden',
+  whites: 'Weißtöne verwenden',
+  split: 'Ton und Helligkeit nacheinander',
+  instant: 'Zurückstellen ohne Überblendung',
+};
+/** Standards je Hersteller. Neue Erfahrungen hier als Regel ergänzen. */
+const PROFILE_RULES = [
+  // IKEA: Ton und Helligkeit gleichzeitig überblenden führt zu Springen/Blinken.
+  { match: (d) => /ikea/i.test(d?.manufacturer || ''), set: { split: true, instant: true }, why: 'IKEA-Leuchten überblenden Ton und Helligkeit nicht zuverlässig gleichzeitig.' },
+];
+function profileKey(dev) {
+  return `${dev?.manufacturer || 'Unbekannt'}|${dev?.model_id || dev?.model || 'Unbekannt'}`;
+}
+function profileDefaults(dev) {
+  const p = { colors: true, whites: true, split: false, instant: false, why: [] };
+  for (const r of PROFILE_RULES)
+    if (r.match(dev)) {
+      Object.assign(p, r.set);
+      p.why.push(r.why);
+    }
+  return p;
+}
+function profileFor(dev) {
+  const key = profileKey(dev);
+  return { key, ...profileDefaults(dev), ...((typeof SESSION !== 'undefined' && SESSION.settings?.profiles?.[key]) || {}) };
+}
+const COLOR_MODES = ['hs', 'xy', 'rgb', 'rgbw', 'rgbww'];
+
 function lightInfo(hass, eid) {
   const st = hass.states[eid];
   const a = st?.attributes || {};
@@ -130,23 +168,33 @@ function lightInfo(hass, eid) {
   const areaId = ent?.area_id || dev?.area_id;
   const area = areaId ? hass.areas?.[areaId]?.name : undefined;
   const isGroup = !!a.is_hue_group || Array.isArray(a.entity_id);
-  // IKEA „WS" (White Spectrum): warm- bis kaltweiß, keine Farben. Meldet sich über Matter teils falsch.
-  const ws = /ikea/i.test(dev?.manufacturer || '') && /\bWS\b/.test(dev?.model || '') && !/CWS/.test(dev?.model || '');
   const members = Array.isArray(a.entity_id) ? a.entity_id.filter((e) => e.startsWith('light.') && e !== eid) : [];
+  const prof = profileFor(dev);
+  const canColor = modes.some((m) => COLOR_MODES.includes(m));
+  const canCt = modes.includes('color_temp');
   return {
     eid,
     name: a.friendly_name || eid,
     area: area || '',
     isGroup,
     members,
-    ct: modes.includes('color_temp') || ws,
-    // IKEA „WS" (White Spectrum) kann nur Weißtöne, meldet sich über Matter aber teils als farbfähig. „CWS" = Farbe.
-    color: modes.some((m) => ['hs', 'xy', 'rgb', 'rgbw', 'rgbww'].includes(m)) && !ws,
-    minK: a.min_color_temp_kelvin || (ws ? 2200 : 2000),
-    maxK: a.max_color_temp_kelvin || (ws ? 4000 : 6500),
-    ikea: /ikea/i.test(dev?.manufacturer || '') || /tradfri|kajplats|ikea/i.test(dev?.model || ''),
+    // Gemeldete Fähigkeiten, gefiltert durch das Profil
+    canColor,
+    canCt,
+    color: canColor && prof.colors,
+    // Weißton: echt gemeldet – oder von Home Assistant über Farbe nachgebildet
+    ct: (canCt || canColor) && prof.whites,
+    minK: a.min_color_temp_kelvin || 2000,
+    maxK: a.max_color_temp_kelvin || 6500,
+    split: !isGroup && prof.split,
+    instant: !isGroup && prof.instant,
+    ikea: /ikea/i.test(dev?.manufacturer || ''),
+    profile: prof.key,
+    dev,
     available: !!st && st.state !== 'unavailable',
-    matter: ent?.platform === 'matter',
+    // Matter-Lampen blenden aus „aus" selbst weich ein – ein Vorab-Einschalten auf 1 % lässt sie blinken.
+    fadeSingle: ent?.platform === 'matter',
+    platform: ent?.platform || '',
   };
 }
 
@@ -164,10 +212,22 @@ function memberMode(groupMode, info) {
  */
 function playTracks(hass, show) {
   const out = [];
+  // Lampen, die eine eigene Spur haben, werden nie zusätzlich über ihre Gruppe gesteuert.
+  const own = new Set(show.tracks.filter((t) => t.entity && !(hass && lightInfo(hass, t.entity).isGroup)).map((t) => t.entity));
   for (const tr of show.tracks) {
     if (!tr.entity) continue;
-    const ov = tr.members || {};
+    let ov = tr.members || {};
     const ids = hass ? lightInfo(hass, tr.entity).members : tr.memberIds || [];
+    const clash = ids.filter((m) => own.has(m));
+    if (clash.length) {
+      // Gruppe in ihre Lampen auflösen, ohne die Lampen mit eigener Spur
+      for (const m of ids) {
+        if (own.has(m)) continue;
+        if (ov[m]) out.push({ ...ov[m], entity: m });
+        else out.push({ entity: m, mode: hass ? memberMode(tr.mode, lightInfo(hass, m)) : tr.mode, split: tr.split, kfs: tr.kfs });
+      }
+      continue;
+    }
     if (!Object.keys(ov).length || !ids.length) {
       out.push(tr);
       continue;
@@ -181,35 +241,16 @@ function playTracks(hass, show) {
   return hass
     ? out.map((t) => {
         const i = lightInfo(hass, t.entity);
-        const mode = t.mode === 'color' && !i.color ? (i.ct ? 'ct' : 'bri') : t.mode;
-        return { ...t, mode, noPreOn: i.matter, ikea: i.ikea };
+        const mode = t.mode === 'color' && !i.color ? (i.ct ? 'ct' : 'bri') : t.mode === 'ct' && !i.ct ? 'bri' : t.mode;
+        return { ...t, mode, noPreOn: i.fadeSingle, instant: i.instant };
       })
     : out;
 }
 
-/**
- * Standard für neue Spuren. IKEA-Lampen werden laut Karten-Einstellung `ikea_mode` behandelt:
- *  split      – erst Ton, dann Helligkeit (Standard)
- *  together   – gleichzeitig wie alle anderen Lampen
- *  brightness – nur Helligkeit, der Ton der Lampe bleibt unverändert
- */
-const IKEA_MODES = {
-  split: 'Erst Ton, dann Helligkeit (empfohlen)',
-  together: 'Gleichzeitig wie andere Lampen',
-  brightness: 'Nur Helligkeit, Ton bleibt',
-};
-function trackDefaults(info, preferred, ctx = {}) {
-  const c = typeof ctx === 'string' ? { ikeaMode: ctx } : ctx || {};
-  const ikeaMode = c.ikeaMode || 'split';
-  // IKEA-Farblampen zeigen zarte Farbübergänge oft sprunghaft -> standardmäßig Weißtöne statt Farbe.
-  if (preferred === 'color' && info.ikea && c.ikeaColor !== 'color') preferred = 'ct';
-  let mode = modeFor(info, preferred);
-  let split = false;
-  if (info.ikea && mode !== 'bri') {
-    if (ikeaMode === 'brightness') mode = 'bri';
-    else split = ikeaMode !== 'together';
-  }
-  return { mode, split };
+/** Standard für neue Spuren: Modus nach Fähigkeit, „nacheinander" nach Profil. */
+function trackDefaults(info, preferred) {
+  const mode = modeFor(info, preferred);
+  return { mode, split: !!info.split && mode !== 'bri' };
 }
 
 function modeFor(info, preferred) {
@@ -402,8 +443,8 @@ function trackBranch(show, tr, dimmer, ti, o) {
 }
 
 /**
- * Zwei Schnappschüsse je Ablauf: <id>_before (alle übrigen Lampen, weich wiederhergestellt) und
- * <id>_before_ikea (IKEA-Lampen, ohne Überblendung – Ton und Helligkeit zugleich überblenden lässt sie blinken).
+ * Zwei Schnappschüsse je Ablauf: <id>_before (weich wiederhergestellt) und <id>_before_instant
+ * (Lampen, deren Profil „Zurückstellen ohne Überblendung" verlangt).
  * snapTpl ist ein Jinja-Ausdruck, der 'scene.<id>_before' ergibt.
  */
 function snapRestore(snapTpl, fade) {
@@ -413,13 +454,13 @@ function snapRestore(snapTpl, fade) {
       then: [{ action: 'scene.turn_on', target: { entity_id: `{{ ${snapTpl} }}` }, data: { transition: fade } }],
     },
     {
-      if: tpl(`{{ state_attr(${snapTpl} ~ '_ikea', 'entity_id') is not none }}`),
-      then: [{ action: 'scene.turn_on', target: { entity_id: `{{ ${snapTpl} ~ '_ikea' }}` }, data: { transition: 0 } }],
+      if: tpl(`{{ state_attr(${snapTpl} ~ '_instant', 'entity_id') is not none }}`),
+      then: [{ action: 'scene.turn_on', target: { entity_id: `{{ ${snapTpl} ~ '_instant' }}` }, data: { transition: 0 } }],
     },
   ];
 }
 function snapDelete(snapTpl) {
-  return [`${snapTpl}`, `${snapTpl} ~ '_ikea'`].map((x) => ({
+  return [`${snapTpl}`, `${snapTpl} ~ '_instant'`].map((x) => ({
     if: tpl(`{{ state_attr(${x}, 'entity_id') is not none }}`),
     then: [{ action: 'scene.delete', target: { entity_id: `{{ ${x} }}` }, continue_on_error: true }],
   }));
@@ -485,13 +526,13 @@ function buildScript(show, settings = DEFAULT_SETTINGS, play = null) {
   // Zustand vor dem Start immer merken – für „vorherigen Zustand wiederherstellen",
   // für den Auto-Stopp und damit „Alles entfernen" sauber zurücksetzen kann.
   // Ein vorhandener Schnappschuss bleibt (Neustart während des Laufs). Veraltete räumt die Auto-Stopp-Automation weg.
-  const ikeaLights = [...new Set(tracks.filter((t) => t.ikea).map((t) => t.entity))];
-  const mainLights = lights.filter((l) => !ikeaLights.includes(l));
+  const instLights = [...new Set(tracks.filter((t) => t.instant).map((t) => t.entity))];
+  const mainLights = lights.filter((l) => !instLights.includes(l));
   seq.push({
-    if: tpl(`{{ state_attr('${snap}', 'entity_id') is none and state_attr('${snap}_ikea', 'entity_id') is none }}`),
+    if: tpl(`{{ state_attr('${snap}', 'entity_id') is none and state_attr('${snap}_instant', 'entity_id') is none }}`),
     then: [
       ...(mainLights.length ? [{ action: 'scene.create', data: { scene_id: snapId, snapshot_entities: mainLights } }] : []),
-      ...(ikeaLights.length ? [{ action: 'scene.create', data: { scene_id: `${snapId}_ikea`, snapshot_entities: ikeaLights } }] : []),
+      ...(instLights.length ? [{ action: 'scene.create', data: { scene_id: `${snapId}_instant`, snapshot_entities: instLights } }] : []),
     ],
   });
   const o = { stopOnOff: settings.stop_external_off !== false, scriptEid: `script.${id}`, snap };
@@ -702,7 +743,7 @@ function genAccent(hass, eids, p, ctx) {
     group.forEach((eid, li) => {
       const info = lightInfo(hass, eid);
       if (eid === accent) {
-        const { split } = trackDefaults(info, 'color', { ...ctx, ikeaColor: 'color' });
+        const { split } = trackDefaults(info, 'color');
         const kfs = colors.map((c, j) => ({ t: wrap(j * change + shift, L), b: j % 2 === 0 ? p.hi : p.lo, k: 2700, c }));
         tracks.push({ entity: eid, mode: 'color', split, kfs: sortKfs(kfs) });
       } else {
@@ -762,7 +803,7 @@ function genPalette(hass, eids, p, ctx, colors, whiteK) {
       const info = lightInfo(hass, eid);
       const ci = colorLamps.indexOf(eid);
       if (ci >= 0) {
-        const { split } = trackDefaults(info, 'color', { ...ctx, ikeaColor: 'color' });
+        const { split } = trackDefaults(info, 'color');
         const shift = (ci * L) / Math.max(1, colorLamps.length) / 2;
         const kfs = colors.map((c, j) => ({ t: wrap(j * step + shift, L), b: j % 2 === 0 ? p.hi : p.lo, k: 2700, c }));
         return { entity: eid, mode: 'color', split, kfs: sortKfs(kfs) };
@@ -933,12 +974,9 @@ class FadeStudioCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
   }
-  _ikeaMode() {
-    const m = this._settings.ikea_mode;
-    return IKEA_MODES[m] ? m : 'split';
-  }
+
   _genCtx() {
-    return { ikeaMode: this._ikeaMode(), ikeaColor: this._settings.ikea_color || 'white' };
+    return {};
   }
   getCardSize() {
     return 10;
@@ -1155,7 +1193,7 @@ class FadeStudioCard extends HTMLElement {
           const i = info[e];
           const k = warm ? i.minK : i.maxK;
           // IKEA wie im Ablauf: erst Ton, dann Helligkeit – beides zugleich setzen viele IKEA-Lampen nicht um
-          if (i.ikea && i.ct) {
+          if (i.split && i.ct) {
             await call({ entity_id: e, color_temp_kelvin: k, transition: tr / 2 });
             await sleep((tr / 2) * 1000 + 400);
             return call({ entity_id: e, brightness_pct: b, transition: tr / 2 });
@@ -1181,7 +1219,7 @@ class FadeStudioCard extends HTMLElement {
       const tone = !i.ct ? '–' : a.k && b.k && b.k - a.k > 500 ? 'ja' : 'nein';
       const plat = h().entities?.[e]?.platform || '?';
       if (b.on === 'unavailable' || a.on === 'unavailable') return { name: i.name, plat, bri: 'nicht erreichbar', tone: '–', detail: 'Lampe ohne Strom oder Verbindung' };
-      return { name: i.name, plat, bri, tone, detail: `${Math.round((a.b / 255) * 100)} → ${Math.round((b.b / 255) * 100)} %${i.ct ? ` · ${a.k ?? '?'} → ${b.k ?? '?'} K` : ''}${i.ikea ? ' · nacheinander' : ''}` };
+      return { name: i.name, plat, bri, tone, detail: `${Math.round((a.b / 255) * 100)} → ${Math.round((b.b / 255) * 100)} %${i.ct ? ` · ${a.k ?? '?'} → ${b.k ?? '?'} K` : ''}${i.split ? ' · nacheinander' : ''}` };
     });
     if (this._show.id) {
       try {
@@ -1206,7 +1244,7 @@ class FadeStudioCard extends HTMLElement {
     const snap = `scene.${id}${SNAP_SUFFIX}`;
     const running = h.states[se]?.state === 'on';
     if (h.states[se]) await h.callService('script', 'turn_off', { entity_id: se });
-    for (const [sc, tr] of [[snap, 2], [`${snap}_ikea`, 0]]) {
+    for (const [sc, tr] of [[snap, 2], [`${snap}_instant`, 0]]) {
       if (!h.states[sc]) continue;
       if (running) await h.callService('scene', 'turn_on', { entity_id: sc, transition: tr }).catch(() => {});
       await h.callService('scene', 'delete', { entity_id: sc }).catch(() => {});
@@ -1399,7 +1437,7 @@ class FadeStudioCard extends HTMLElement {
     tr.members[m] = {
       entity: m,
       mode,
-      split: info.ikea && mode !== 'bri' ? this._ikeaMode() === 'split' : !!tr.split,
+      split: info.split && mode !== 'bri',
       kfs: tr.kfs.map((k) => ({ ...k, k: clamp(k.k, info.minK, info.maxK) })),
     };
     return tr.members[m];
@@ -1610,9 +1648,11 @@ class FadeStudioCard extends HTMLElement {
         </div>
 
         <div class="params">
+          <div class="cell col1"><span class="lbl">Name</span><input class="fld name" id="name" value="${esc(s.name)}"></div>
+          <div class="pgroup">
           <div class="cell"><span class="lbl">Länge</span><span class="chips">${[15, 30, 45, 60]
             .map((v) => `<button class="chip mono ${s.length === v ? 'on' : ''}" data-len="${v}">${v}</button>`)
-            .join('')}<input class="fld mono num" id="length" type="number" min="2" max="600" step="1" value="${r1(s.length)}" title="Länge in Sekunden"></span></div>
+            .join('')}<input class="fld mono num" id="length" type="number" min="2" max="600" step="1" value="${r1(s.length)}" title="Länge in Sekunden"><span class="u">s</span></span></div>
           <div class="cell"><span class="lbl">Schleife</span><input type="checkbox" class="sw" id="loop" ${s.loop ? 'checked' : ''}></div>
           <div class="cell"><span class="lbl">Einblenden</span><span class="v"><input class="fld mono num" id="fadeIn" type="number" min="1" step="1" value="${s.fadeIn}"><span class="u">s</span></span></div>
           <div class="cell"><span class="lbl">Am Ende</span>
@@ -1633,7 +1673,7 @@ class FadeStudioCard extends HTMLElement {
             }
           </div>
           <div class="cell"><span class="lbl">Übergang</span><span class="v"><input class="fld mono num" id="endFade" type="number" min="0" step="1" value="${s.end.fade}" ${s.end.mode === 'hold' ? 'disabled' : ''}><span class="u">s</span></span></div>
-          <div class="cell"><span class="lbl">Name</span><input class="fld name" id="name" value="${esc(s.name)}"></div>
+        </div>
         </div>
 
         <div class="tl" id="tl">
@@ -1694,8 +1734,8 @@ class FadeStudioCard extends HTMLElement {
         .join('')}</span>`;
     };
     const ikea = (ref, inf, m) =>
-      inf.ikea && ref.mode !== 'bri'
-        ? `<button class="tag ${ref.split ? 'on' : ''}" data-split="${ti}"${m ? ` data-member="${m}"` : ''} title="IKEA erkannt. Aktiv: erst Ton, dann Helligkeit überblenden">IKEA</button>`
+      (inf.split || ref.split) && ref.mode !== 'bri' && !inf.isGroup
+        ? `<button class="tag ${ref.split ? 'on' : ''}" data-split="${ti}"${m ? ` data-member="${m}"` : ''} title="${inf.ikea ? 'Ikea-Leuchte erkannt. ' : ''}Ikea-Modus: erst Ton, dann Helligkeit überblenden – verhindert Springen. Antippen zum Ein- oder Ausschalten.">${inf.ikea ? 'Ikea-Modus' : 'Nacheinander'}</button>`
         : '';
     if (tr.mode === 'color' && !info.color && !info.isGroup) tr.mode = info.ct ? 'ct' : 'bri';
     const members = info.members;
@@ -1706,10 +1746,10 @@ class FadeStudioCard extends HTMLElement {
         <div class="nm2">
           <span class="grip" data-drag="${ti}" title="Ziehen zum Umsortieren">${this._ic('drag-vertical')}</span>
           ${isGroup ? `<button class="ib sm" data-expand="${ti}" title="${tr.expanded ? 'Einzelne Lampen ausblenden' : 'Einzelne Lampen zeigen'}">${this._ic(tr.expanded ? 'chevron-down' : 'chevron-right')}</button>` : ''}
-          <span class="nmt" title="${esc(tr.entity)}">${esc(info.name)}</span>
+          <span class="nmt" title="${esc(tr.entity)}">${esc(info.name)}</span>${isGroup ? `<span class="hint">Gruppe · ${members.length}</span>` : ''}${info.available ? '' : '<span class="na" title="Home Assistant erreicht diese Leuchte gerade nicht – ohne Strom oder ohne Verbindung">nicht erreichbar</span>'}
           <button class="ib sm del" data-deltrack="${ti}" title="Spur entfernen">${this._ic('close')}</button>
         </div>
-        <div class="meta">${seg(tr, info)}${ikea(tr, info)}${isGroup ? `<span class="tag">Gruppe · ${members.length}</span>` : ''}${info.available ? '' : '<span class="tag warn" title="Home Assistant erreicht diese Lampe gerade nicht – ohne Strom oder ohne Verbindung">nicht erreichbar</span>'}</div>
+        <div class="meta">${seg(tr, info)}${ikea(tr, info)}</div>
       </div>
       <div class="ln"><div class="lane" data-lane="${ti}"></div></div>
     </div>`;
@@ -1751,15 +1791,18 @@ class FadeStudioCard extends HTMLElement {
         .join('')}</span><input type="color" class="colorpick" id="kfC" value="${kf.c}" title="Eigene Farbe"></div>`;
     }
     return `<div class="insp">
-      <div class="cell who"><span class="lbl">Punkt ${order.indexOf(sel.ki) + 1} von ${tr.kfs.length}</span><span class="n">${esc(info.name)}</span></div>
+      <div class="cell who col1"><span class="lbl">Punkt ${order.indexOf(sel.ki) + 1} von ${tr.kfs.length}</span><span class="n">${esc(info.name)}</span></div>
+      <div class="ibody"><div class="irow">
       <div class="cell"><span class="lbl">Zeit</span><span class="v"><input class="fld mono num" id="kfT" type="number" min="0" max="${this._show.length}" step="0.1" value="${r1(kf.t)}"><span class="u">s</span></span></div>
       <div class="cell"><span class="lbl">Helligkeit</span><div class="ctl"><input type="range" class="rng" id="kfB" min="0" max="100" step="1" value="${Math.round(kf.b)}"><span class="mono val" id="kfBv">${Math.round(kf.b)} %</span></div></div>
       <div class="cell grow2"><span class="lbl">${tr.mode === 'color' ? 'Farbe' : 'Weißton'}</span>${tone}</div>
-      <div class="cell acts">
-        <button class="btn" id="kfPreview" title="Zeigt diesen Zustand jetzt sofort an der Lampe">${this._ic('lightbulb-on-outline')}An Lampe zeigen</button>
-        <button class="btn" id="kfAll" title="Überträgt Helligkeit und Ton dieses Punkts zur selben Zeit auf alle anderen Spuren">${this._ic('content-copy')}Auf alle Spuren</button>
-        <button class="btn" id="kfDel" title="Diesen Punkt löschen">${this._ic('delete-outline')}Löschen</button>
       </div>
+      <div class="acts">
+        <button class="btn" id="kfPreview" title="Zeigt diesen Zustand jetzt sofort an der Lampe">${this._ic('lightbulb-on-outline')}An Lampe zeigen</button>
+        ${tr.mode !== 'bri' ? `<button class="btn" id="kfAllTone" title="Setzt diesen ${tr.mode === 'color' ? 'Farbton' : 'Weißton'} zur selben Zeit auf allen anderen Spuren">${this._ic('palette-outline')}${tr.mode === 'color' ? 'Farbe' : 'Weißton'} auf alle Spuren übertragen</button>` : ''}
+        <button class="btn" id="kfAllBri" title="Setzt diese Helligkeit zur selben Zeit auf allen anderen Spuren">${this._ic('brightness-6')}Helligkeit auf alle Spuren übertragen</button>
+        <button class="btn" id="kfDel" title="Diesen Punkt löschen">${this._ic('delete-outline')}Löschen</button>
+      </div></div>
     </div>`;
   }
 
@@ -1850,7 +1893,7 @@ class FadeStudioCard extends HTMLElement {
       <div class="genlights">${lights
         .map(
           (l) =>
-            `<label class="pick"><input type="checkbox" data-gl="${l.eid}" ${g.lights.includes(l.eid) ? 'checked' : ''}><span>${esc(l.name)}</span><span class="lbl">${esc(l.area || '')}${l.isGroup ? ' · Gruppe' : ''}${l.ikea ? ' · IKEA' : ''}</span></label>`
+            `<label class="pick"><input type="checkbox" data-gl="${l.eid}" ${g.lights.includes(l.eid) ? 'checked' : ''}><span>${esc(l.name)}</span><span class="lbl">${esc(l.area || '')}${l.isGroup ? ' · Gruppe' : ''}${l.ikea ? ' · Ikea' : ''}</span></label>`
         )
         .join('')}</div>
       <div class="genparams">${T.params.map(field).join('')}</div>
@@ -1858,14 +1901,59 @@ class FadeStudioCard extends HTMLElement {
     </div></div>`;
   }
 
+  /** Alle Leuchtenmodelle im System mit ihren Lampen und gemeldeten Fähigkeiten. */
+  _profiles() {
+    const h = this._hass;
+    const map = new Map();
+    for (const eid of Object.keys(h.states).filter((e) => e.startsWith('light.'))) {
+      const i = lightInfo(h, eid);
+      if (i.isGroup) continue;
+      if (!map.has(i.profile)) map.set(i.profile, { key: i.profile, dev: i.dev, lamps: [] });
+      map.get(i.profile).lamps.push(i);
+    }
+    return [...map.values()].sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  _profilesHtml(draft) {
+    const yes = (n, t) => (n === t ? 'ja' : n === 0 ? 'nein' : `${n} von ${t}`);
+    return this._profiles()
+      .map((p) => {
+        const d = profileDefaults(p.dev);
+        const ov = draft.profiles?.[p.key] || {};
+        const cur = { ...d, ...ov };
+        const n = p.lamps.length;
+        const nc = p.lamps.filter((l) => l.canColor).length;
+        const nct = p.lamps.filter((l) => l.canCt).length;
+        const ks = p.lamps.filter((l) => l.canCt);
+        const range = ks.length ? `${Math.min(...ks.map((l) => l.minK))}–${Math.max(...ks.map((l) => l.maxK))} K` : '';
+        const fw = [...new Set(p.lamps.map((l) => l.dev?.sw_version).filter(Boolean))];
+        const mixed = (nc > 0 && nc < n) || (nct > 0 && nct < n) || fw.length > 1;
+        const [man, model] = p.key.split('|');
+        return `<div class="prof">
+          <div class="ph"><span class="pn">${esc(p.dev?.model || model)}</span><span class="lbl">${esc(man)}${p.dev?.model_id && p.dev.model_id !== p.dev.model ? ` · ${esc(p.dev.model_id)}` : ''}</span></div>
+          <div class="pcap mono">Farbe: ${yes(nc, n)} · Weißton: ${yes(nct, n)}${range ? ` (${range})` : ''}${fw.length ? ` · Firmware ${esc(fw.join(', '))}` : ''}</div>
+          ${mixed ? '<div class="lbl">Leuchten dieses Modells melden Unterschiedliches (Charge oder Firmware). Es gilt immer, was jede einzelne Leuchte meldet.</div>' : ''}
+          ${d.why.length ? `<div class="lbl">Standard: ${esc(d.why.join(' '))}</div>` : ''}
+          ${Object.entries(PROFILE_FIELDS)
+            .map(
+              ([f, label]) =>
+                `<label class="opt sm"><span>${label}${ov[f] !== undefined && ov[f] !== d[f] ? ' <small>angepasst</small>' : ''}</span><input type="checkbox" class="sw" data-pk="${esc(p.key)}" data-pf="${f}" ${cur[f] ? 'checked' : ''}></label>`
+            )
+            .join('')}
+          <div class="plamps">${p.lamps
+            .map((l) => `<span>${esc(l.name)}<small class="mono"> ${l.canColor ? 'Farbe' : l.canCt ? 'Weißton' : 'Helligkeit'}${l.available ? '' : ' · nicht erreichbar'}</small></span>`)
+            .join('')}</div>
+        </div>`;
+      })
+      .join('');
+  }
+
   _settingsHtml() {
-    const st = this._settings;
+    if (!SESSION.draft) SESSION.draft = JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS, ...this._settings }));
+    const st = SESSION.draft;
+    const tab = SESSION.settingsTab || 'general';
     const sel = (id, opts, cur) => `<select class="fld" id="${id}">${opts.map(([v, t]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
-    return `<div class="overlay"><div class="dialog">
-      <div class="dhead"><h2>Einstellungen</h2><button class="ib" id="dlgX" title="Schließen ohne Speichern (Esc)">${this._ic('close')}</button></div>
-      <div class="sec2"><span class="lbl">IKEA-Lampen</span></div>
-      <div class="opt"><span>Überblenden<small>Viele IKEA-Lampen schaffen Ton und Helligkeit nicht gleichzeitig.</small></span>${sel('stIkea', Object.entries(IKEA_MODES), st.ikea_mode)}</div>
-      <div class="opt"><span>Farbige IKEA-Lampen in Vorlagen<small>Zarte Farbübergänge können bei IKEA springen.</small></span>${sel('stIkeaColor', [['white', 'Weißtöne'], ['color', 'Farben']], st.ikea_color === 'color' ? 'color' : 'white')}</div>
+    const general = `
       <div class="sec2"><span class="lbl">Automatisch stoppen</span></div>
       <div class="opt"><span>Niemand mehr zu Hause<small>Danach:</small>${sel('stAwayAction', [['off', 'Lampen ausschalten'], ['restore', 'Vorher-Zustand'], ['keep', 'So lassen']], st.away_action)}</span><input type="checkbox" class="sw" id="stAway" ${st.stop_away ? 'checked' : ''}></div>
       <div class="opt"><span>Lampe von außen ausgeschaltet<small>Schalter, App, Sprachbefehl. Danach:</small>${sel('stOffAction', [['all', 'Alle Lampen des Ablaufs aus'], ['keep', 'Übrige so lassen']], st.off_action === 'keep' ? 'keep' : 'all')}</span><input type="checkbox" class="sw" id="stOff" ${st.stop_external_off ? 'checked' : ''}></div>
@@ -1878,7 +1966,14 @@ class FadeStudioCard extends HTMLElement {
               .join('')}</table><p class="lbl">${esc(SESSION.diag.trace || '')}${SESSION.diag.err ? ` Fehler beim Senden: ${esc(SESSION.diag.err)}` : ''}</p>`
           : ''
       }
-      <div class="danger"><span>Alles entfernen<small>Stoppt laufende Abläufe, stellt den Zustand vor dem Start wieder her und löscht alle Abläufe, Regler, die Auto-Stopp-Automation und die Einstellungen.</small></span><button class="btn err" id="removeAll">Entfernen …</button></div>
+      <div class="danger"><span>Alles entfernen<small>Stoppt laufende Abläufe, stellt den Zustand vor dem Start wieder her und löscht alle Abläufe, Regler, die Auto-Stopp-Automation und die Einstellungen.</small></span><button class="btn err" id="removeAll">Entfernen …</button></div>`;
+    const lamps = `
+      <p class="lbl">Je Leuchtenmodell (Hersteller und Modellkennung, nicht Name). Was eine Leuchte kann, meldet sie selbst – hier legst du fest, wie Fade Studio sie ansteuert. Gilt für neue Spuren und beim nächsten Speichern für alle Abläufe.</p>
+      ${this._profilesHtml(st)}`;
+    return `<div class="overlay"><div class="dialog wide">
+      <div class="dhead"><h2>Einstellungen</h2><button class="ib" id="dlgX" title="Schließen ohne Speichern (Esc)">${this._ic('close')}</button></div>
+      <div class="tabs"><button class="${tab === 'general' ? 'on' : ''}" data-tab="general">Allgemein</button><button class="${tab === 'lamps' ? 'on' : ''}" data-tab="lamps">Leuchten</button></div>
+      ${tab === 'general' ? general : lamps}
       <div class="dfoot"><span class="lbl mono">Version ${FS_VERSION}</span><span class="grow"></span><button class="btn pri" id="stSave">Fertig</button></div>
     </div></div>`;
   }
@@ -1925,7 +2020,7 @@ class FadeStudioCard extends HTMLElement {
                 <rect class="kf ${sel ? 'sel' : ''}" data-ki="${ki}" x="${x(kf.t) - z / 2}" y="${y(kf.b) - z / 2}" width="${z}" height="${z}"/>`;
             })
             .join('');
-      lane.innerHTML = `<div class="cols" style="grid-template-columns:repeat(${n},1fr);gap:${W / n > 7 ? 2 : 1}px;top:${P}px;bottom:${P}px">${cols}</div>
+      lane.innerHTML = `<div class="cols" style="grid-template-columns:repeat(${n},1fr);gap:1px;top:${P}px;bottom:${P}px">${cols}</div>
         <svg width="${W}" height="${H}">${grid}<polyline points="${poly}" class="${ghost ? 'curve ghost' : 'curve'}"/>${handles}</svg>`;
       lane.querySelector('svg').addEventListener('pointerdown', (ev) => this._onLanePointer(ev, ti, lane));
     });
@@ -2276,19 +2371,29 @@ class FadeStudioCard extends HTMLElement {
         });
         on('#kfC', 'input', (e) => ((kf.c = e.target.value), live()));
         on('#kfPreview', 'click', () => this._previewKf(ti, ki, m));
-        on('#kfAll', 'click', () => {
+        // Übertragen: nur Ton oder nur Helligkeit; fehlt auf einer Spur ein Punkt an dieser Stelle, entsteht er mit ihren bisherigen Werten.
+        const transfer = (what) => {
           s.tracks.forEach((t, i) => {
             if (i === ti && !m) return;
             const info = lightInfo(this._hass, t.entity);
-            const same = t.kfs.find((x) => Math.abs(x.t - kf.t) < 0.25);
-            const copy = { t: kf.t, b: kf.b, k: clamp(kf.k, info.minK, info.maxK), c: kf.c };
-            if (same) Object.assign(same, copy);
-            else t.kfs.push(copy);
+            let same = t.kfs.find((x) => Math.abs(x.t - kf.t) < 0.25);
+            if (!same) {
+              const st = stateAt(t.kfs, s.length, s.loop, kf.t);
+              same = { t: kf.t, b: Math.round(st.b), k: Math.round(st.k), c: st.c };
+              t.kfs.push(same);
+            }
+            if (what === 'bri') same.b = kf.b;
+            else {
+              same.k = clamp(kf.k, info.minK, info.maxK);
+              same.c = kf.c;
+            }
           });
           this._dirty = true;
-          this._setMsg('Auf alle Spuren übertragen.');
+          this._setMsg(what === 'bri' ? 'Helligkeit auf alle Spuren übertragen.' : 'Ton auf alle Spuren übertragen.');
           this._render();
-        });
+        };
+        on('#kfAllTone', 'click', () => transfer('tone'));
+        on('#kfAllBri', 'click', () => transfer('bri'));
         on('#kfDel', 'click', () => {
           tr.kfs.splice(ki, 1);
           this._sel = null;
@@ -2310,6 +2415,7 @@ class FadeStudioCard extends HTMLElement {
     // Dialoge
     const closeDialogs = () => {
       SESSION.settingsOpen = false;
+      SESSION.draft = null;
       this._gen = null;
       this._render();
     };
@@ -2317,22 +2423,38 @@ class FadeStudioCard extends HTMLElement {
     on('.overlay', 'click', (e) => e.target.classList.contains('overlay') && closeDialogs());
     on('#settings', 'click', () => {
       SESSION.settingsOpen = true;
+      SESSION.draft = null;
       this._render();
       if (!SESSION.settings) this._loadSettings();
     });
     if (SESSION.settingsOpen) {
       on('#removeAll', 'click', () => this._removeAll());
       on('#diag', 'click', () => this._diagnose());
+      const d = SESSION.draft;
+      const upd = (id, f, key) => on(id, 'change', (e) => (d[key] = f(e.target)));
+      upd('#stAway', (t) => t.checked, 'stop_away');
+      upd('#stAwayAction', (t) => t.value, 'away_action');
+      upd('#stOff', (t) => t.checked, 'stop_external_off');
+      upd('#stOffAction', (t) => t.value, 'off_action');
+      all('[data-tab]', (el) => ((SESSION.settingsTab = el.dataset.tab), this._render()));
+      r.querySelectorAll('[data-pk]').forEach((el) =>
+        el.addEventListener('change', () => {
+          const key = el.dataset.pk;
+          const f = el.dataset.pf;
+          const p = this._profiles().find((x) => x.key === key);
+          const def = profileDefaults(p?.dev);
+          d.profiles = d.profiles || {};
+          const ov = { ...(d.profiles[key] || {}) };
+          if (el.checked === def[f]) delete ov[f];
+          else ov[f] = el.checked;
+          if (Object.keys(ov).length) d.profiles[key] = ov;
+          else delete d.profiles[key];
+          this._render();
+        })
+      );
       on('#stSave', 'click', async () => {
-        const g = (id) => r.querySelector(id);
-        await this._saveSettings({
-          ikea_mode: g('#stIkea').value,
-          ikea_color: g('#stIkeaColor').value,
-          stop_away: g('#stAway').checked,
-          away_action: g('#stAwayAction').value,
-          stop_external_off: g('#stOff').checked,
-          off_action: g('#stOffAction').value,
-        });
+        await this._saveSettings(d);
+        SESSION.draft = null;
         SESSION.settingsOpen = false;
         this._render();
       });
@@ -2369,7 +2491,13 @@ class FadeStudioCard extends HTMLElement {
       on('#genOk', 'click', () => {
         if (!g.lights.length) return alert('Bitte mindestens eine Lampe wählen.');
         const T = TEMPLATES[g.type];
-        const res = T.build(this._hass, g.lights, g.p, this._genCtx());
+        // Gruppe und ihre Lampen nie doppelt: Sind alle Lampen einer Gruppe einzeln gewählt, entfällt die Gruppe.
+        // Bei teilweiser Überschneidung löst das Abspielen die Gruppe auf (siehe playTracks).
+        const picked = g.lights.filter((e) => {
+          const i = lightInfo(this._hass, e);
+          return !(i.isGroup && i.members.length && i.members.every((m) => g.lights.includes(m)));
+        });
+        const res = T.build(this._hass, picked, g.p, this._genCtx());
         // Eine Vorlage erzeugt immer einen neuen Ablauf; gespeicherte Abläufe bleiben unberührt.
         if (s.id || s.tracks.length) this._newShow();
         const ns = this._show;
@@ -2423,7 +2551,7 @@ const STYLE = `
   :host { display: block; }
   .light { --bg:#e9e8e4; --panel:#f6f5f2; --well:#ecebe7; --ink:#141414; --ink-2:#6e6d69; --line:#d6d5d0; --acc:#ff5f1f; --acc-ink:#141414; --disp:#121212; --gap:#2a2a2a; }
   .dark  { --bg:#0f0f0f; --panel:#1a1a1a; --well:#242424; --ink:#ececec; --ink-2:#8b8b8b; --line:#2e2e2e; --acc:#ff6a26; --acc-ink:#141414; --disp:#0b0b0b; --gap:#2a2a2a; }
-  ha-card.fs { --ha-card-background: var(--panel); --ha-card-border-color: var(--line); background: var(--panel); color: var(--ink); overflow: hidden; position: relative;
+  ha-card.fs { --col: 240px; --ha-card-background: var(--panel); --ha-card-border-color: var(--line); background: var(--panel); color: var(--ink); overflow: hidden; position: relative;
     font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, Roboto, system-ui, sans-serif)); font-size: 14px; line-height: 20px; --mdc-icon-size: 20px; }
   .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
   .lbl { font-size: 12px; line-height: 16px; color: var(--ink-2); }
@@ -2492,7 +2620,7 @@ const STYLE = `
   .empty { padding: 16px 20px; }
   .lib .ft { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
   .main { display: flex; flex-direction: column; min-width: 0; }
-  .transport { min-height: 88px; display: grid; grid-template-columns: auto auto 1fr minmax(220px, 320px); align-items: center; gap: 20px; padding: 12px 24px; border-bottom: 1px solid var(--line); box-sizing: border-box; }
+  .transport { min-height: 88px; display: grid; grid-template-columns: calc(var(--col) - 24px) auto 1fr minmax(220px, 320px); align-items: center; column-gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--line); box-sizing: border-box; }
   .narrow .transport { grid-template-columns: auto 1fr; padding: 12px 16px; }
   .narrow .transport > span:empty { display: none; }
   .narrow .transport .master { grid-column: 1 / -1; }
@@ -2501,9 +2629,12 @@ const STYLE = `
   .tot { color: var(--ink-2); font-size: 15px; letter-spacing: 0; margin-left: 6px; }
   .master { display: grid; grid-template-columns: auto 1fr 48px; gap: 12px; align-items: center; }
   .val { text-align: right; white-space: nowrap; }
-  .params { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
-  .params .cell { border-bottom: 0; box-shadow: 0 1px 0 var(--line); }
-  .params .cell:last-child { flex: 1; min-width: 180px; }
+  .params { display: grid; grid-template-columns: var(--col) 1fr; border-bottom: 1px solid var(--line); }
+  .narrow .params { grid-template-columns: 1fr; }
+  .col1 { width: var(--col); box-sizing: border-box; padding-left: 24px !important; }
+  .narrow .col1 { width: auto; padding-left: 16px !important; }
+  .pgroup { display: flex; flex-wrap: wrap; }
+  .pgroup .cell { border-bottom: 0; }
   .cell { padding: 10px 20px 12px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; justify-content: center; min-width: 0; }
   .cell:last-child { border-right: 0; }
   .narrow .cell { border-bottom: 1px solid var(--line); padding: 10px 16px; }
@@ -2512,7 +2643,14 @@ const STYLE = `
 
   .tl { position: relative; padding-right: 24px; }
   .narrow .tl { padding-right: 16px; }
-  .row { display: grid; grid-template-columns: 240px 1fr; }
+  .row { display: grid; grid-template-columns: var(--col) 1fr; }
+  .row.track.top { min-height: 88px; }
+  .row.track.sub { min-height: 68px; }
+  .th .nm2, .th .meta { min-height: 32px; }
+  .hint { font-size: 11px; color: var(--ink-2); white-space: nowrap; }
+  .na { font-size: 11px; color: var(--ink-2); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+  .na::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--acc); }
+  .wide .tl { scrollbar-gutter: stable; }
   .narrow .row { grid-template-columns: 1fr; }
   .row > .th { padding: 10px 12px 10px 24px; border-right: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; gap: 4px; min-width: 0; }
   .narrow .row > .th { border-right: 0; padding: 10px 0 4px 16px; }
@@ -2554,13 +2692,19 @@ const STYLE = `
   .guide b { position: absolute; top: 22px; left: 4px; font-size: 11px; line-height: 16px; padding: 0 5px; border: 1px solid var(--acc); color: var(--acc); background: var(--panel); font-weight: 500; white-space: nowrap; }
   .addrow { display: flex; gap: 8px; padding: 12px 0 12px 24px; border-bottom: 1px solid var(--line); }
   .addrow .fld { max-width: 320px; flex: 1; }
-  .insp { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
-  .insp .cell { border-right: 1px solid var(--line); }
+  .insp { display: grid; grid-template-columns: var(--col) 1fr; border-bottom: 1px solid var(--line); }
+  .narrow .insp { grid-template-columns: 1fr; }
+  .insp .who { border-right: 1px solid var(--line); }
+  .ibody { min-width: 0; }
+  .irow { display: grid; grid-template-columns: auto minmax(180px, 1fr) minmax(260px, 1.6fr); }
+  .narrow .irow { grid-template-columns: 1fr; }
+  .insp .acts { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 12px 20px; }
+  .insp .acts .btn { height: 32px; padding: 0 10px; font-size: 13px; }
+  .irow .cell { border-right: 1px solid var(--line); }
+  .irow .cell:last-child { border-right: 0; }
   .insp .wide { flex: 1; padding: 14px 24px; }
-  .insp .who { width: 216px; padding-left: 24px; }
+  .insp .who { }
   .insp .who .n { font-weight: 500; }
-  .insp .grow2 { flex: 1; min-width: 240px; }
-  .insp .acts { flex-direction: row; align-items: center; gap: 6px; border-right: 0; flex-wrap: wrap; }
   .ctl { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; min-width: 160px; }
   .sw-row { display: grid; gap: 2px; padding: 2px; height: 32px; }
   .sw-row button { border: 0; padding: 0; border-radius: 1px; min-width: 14px; }
@@ -2606,6 +2750,17 @@ const STYLE = `
   .danger > span { display: flex; flex-direction: column; gap: 4px; }
   .danger small { color: var(--ink-2); font-size: 12px; line-height: 16px; }
   .dfoot { display: flex; align-items: center; gap: 8px; padding: 16px 0 4px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .tabs button { height: 40px; padding: 0 12px; border: 0; background: transparent; color: var(--ink-2); border-bottom: 2px solid transparent; font-weight: 500; }
+  .tabs button.on { color: var(--ink); border-color: var(--acc); }
+  .prof { padding: 12px 0; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+  .prof .ph { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .prof .pn { font-weight: 600; }
+  .prof .pcap { font-size: 12px; color: var(--ink); }
+  .prof .opt.sm { padding: 4px 0; border: 0; }
+  .prof .opt small { color: var(--acc); }
+  .plamps { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; padding-top: 4px; }
+  .plamps small { color: var(--ink-2); font-size: 11px; }
   .diag { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
   .diag th { text-align: left; font-weight: 400; color: var(--ink-2); font-size: 12px; padding: 4px 6px 4px 0; border-bottom: 1px solid var(--line); }
   .diag td { padding: 6px 6px 6px 0; border-bottom: 1px solid var(--line); }

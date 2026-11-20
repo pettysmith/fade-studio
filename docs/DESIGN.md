@@ -40,6 +40,47 @@ Die Farbregel gilt in beiden Zonen.
 
 Beide bestehen aus denselben Bausteinen: Bibliothek, Transport, Zeitleiste, Inspektor, Parameter. Kein Baustein existiert nur in einer Ansicht in anderer Form.
 
+## System (verbindlich)
+
+**Spalten**
+- Linke Spalte `--col` = 240 px, überall gleich: Name, Spurnamen, Punkt-Inspektor, Transport-Tasten. Ihre rechte Kante ist eine durchgehende senkrechte Linie.
+- Rechts davon der Inhalt (Parameter, Zeitleiste, Werte). Abstand zur Spalte 16 px.
+- Außenabstand 24 px (breit) bzw. 16 px (schmal).
+
+**Höhen**
+| Element | Höhe |
+|---|---|
+| Kopfzeile | 64 px |
+| Transport | 88 px |
+| Spur (oben) | 88 px, Lichtdisplay 72 px |
+| Spur (Gruppenmitglied) | 68 px, Lichtdisplay 52 px |
+| Zeilen in der Spur-Beschriftung | je 32 px (Name · Modus) |
+| Tasten groß / normal / klein | 48 / 40 / 32 px |
+| Felder, Chips | 36 / 32 px |
+
+**Schrift** (Größe / Gewicht)
+| Rolle | |
+|---|---|
+| Zeitanzeige | 34 px Monospace |
+| Titel | 16 px / 600 |
+| Text, Werte | 14 px / 400–500 |
+| Beschriftung Rahmen | 12 px, Satzschreibung |
+| Beschriftung Sequenz, Hinweise | 10–11 px |
+
+**Symbole** 18 px (klein), 20 px (normal), 24 px (Tasten).
+
+**Einheiten** stehen immer hinter dem Wert, in Nebentextfarbe: `s`, `%`, `K`. Keine Werte ohne Einheit.
+
+**Hinweise vs. Bedienelemente**
+- Bedienelement mit Rahmen (Chip, Tag) = antippbar, ändert etwas.
+- Reiner Hinweis (z. B. „nicht erreichbar“, „Gruppe · 3“) = kleine Schrift ohne Rahmen in der Namenszeile; verändert die Zeilenhöhe nie.
+
+**Linien**
+- Raster und Spalten sind fest; nichts verschiebt sich beim Bedienen (fester Spaltenabstand, reservierte Scrollleiste).
+
+**Wortwahl**
+- Ausgeschrieben und eindeutig: „Ikea-Leuchte erkannt“, „Ikea-Modus“, „Helligkeit auf alle Spuren übertragen“.
+
 ## Raster und Maße
 
 - Grundmaß 8 px. Abstände 4 / 8 / 16 / 24 / 32.

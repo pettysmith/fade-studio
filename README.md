@@ -41,7 +41,7 @@ Abgespielt wird ausschließlich von Home Assistant selbst. Jeder Abschnitt der Z
   - **⇅ Seesaw** – zwei Hälften wechseln sich ab: eine hell, die andere dunkel
   - **〰 Ripple** – ein heller Impuls wandert der Reihe nach über die Lampen
   - **✧ Twinkle** – mal hier, mal dort leuchtet eine Lampe kurz auf
-- Farbige IKEA-Lampen bekommen in Vorlagen standardmäßig Weißtöne statt Farben (ruhiger); umstellbar in ⚙. Farben gehen als xy-Werte an die Lampen.
+- **Leuchtenprofile** (⚙ → Leuchten): Was eine Leuchte kann, meldet sie selbst. Je Modell (Hersteller + Modellkennung) lässt sich festlegen: Farben verwenden, Weißtöne verwenden, Ton und Helligkeit nacheinander (Ikea-Modus), Zurückstellen ohne Überblendung. Standards je Hersteller, jederzeit anpassbar. Farben gehen als xy-Werte an die Lampen.
 - **Automatisch stoppen** (⚙ Einstellungen):
   - wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird (Schalter, App, Sprachbefehl, „Alles aus“) – der Ablauf erkennt das selbst. Danach wahlweise alle Lampen des Ablaufs ausschalten (Standard, mit Nachkontrolle nach 2 s) oder nur die ausgeschalteten aus lassen
   - wenn niemand mehr zu Hause ist (`zone.home` wird 0) – danach wahlweise ausschalten, vorherigen Zustand wiederherstellen oder so lassen
