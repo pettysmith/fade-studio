@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.8.0';
+const FS_VERSION = '0.8.1';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
@@ -130,6 +130,8 @@ function lightInfo(hass, eid) {
   const areaId = ent?.area_id || dev?.area_id;
   const area = areaId ? hass.areas?.[areaId]?.name : undefined;
   const isGroup = !!a.is_hue_group || Array.isArray(a.entity_id);
+  // IKEA „WS" (White Spectrum): warm- bis kaltweiß, keine Farben. Meldet sich über Matter teils falsch.
+  const ws = /ikea/i.test(dev?.manufacturer || '') && /\bWS\b/.test(dev?.model || '') && !/CWS/.test(dev?.model || '');
   const members = Array.isArray(a.entity_id) ? a.entity_id.filter((e) => e.startsWith('light.') && e !== eid) : [];
   return {
     eid,
@@ -137,11 +139,11 @@ function lightInfo(hass, eid) {
     area: area || '',
     isGroup,
     members,
-    ct: modes.includes('color_temp'),
+    ct: modes.includes('color_temp') || ws,
     // IKEA „WS" (White Spectrum) kann nur Weißtöne, meldet sich über Matter aber teils als farbfähig. „CWS" = Farbe.
-    color: modes.some((m) => ['hs', 'xy', 'rgb', 'rgbw', 'rgbww'].includes(m)) && !(/\bWS\b/.test(dev?.model || '') && !/CWS/.test(dev?.model || '')),
-    minK: a.min_color_temp_kelvin || 2000,
-    maxK: a.max_color_temp_kelvin || 6500,
+    color: modes.some((m) => ['hs', 'xy', 'rgb', 'rgbw', 'rgbww'].includes(m)) && !ws,
+    minK: a.min_color_temp_kelvin || (ws ? 2200 : 2000),
+    maxK: a.max_color_temp_kelvin || (ws ? 4000 : 6500),
     ikea: /ikea/i.test(dev?.manufacturer || '') || /tradfri|kajplats|ikea/i.test(dev?.model || ''),
     available: !!st && st.state !== 'unavailable',
     matter: ent?.platform === 'matter',
@@ -176,7 +178,13 @@ function playTracks(hass, show) {
     }
   }
   // Matter-Lampen blenden aus „aus" selbst weich ein – ein Vorab-Einschalten auf 1 % lässt sie blinken.
-  return hass ? out.map((t) => ({ ...t, noPreOn: lightInfo(hass, t.entity).matter, ikea: lightInfo(hass, t.entity).ikea })) : out;
+  return hass
+    ? out.map((t) => {
+        const i = lightInfo(hass, t.entity);
+        const mode = t.mode === 'color' && !i.color ? (i.ct ? 'ct' : 'bri') : t.mode;
+        return { ...t, mode, noPreOn: i.matter, ikea: i.ikea };
+      })
+    : out;
 }
 
 /**
@@ -1689,6 +1697,7 @@ class FadeStudioCard extends HTMLElement {
       inf.ikea && ref.mode !== 'bri'
         ? `<button class="tag ${ref.split ? 'on' : ''}" data-split="${ti}"${m ? ` data-member="${m}"` : ''} title="IKEA erkannt. Aktiv: erst Ton, dann Helligkeit überblenden">IKEA</button>`
         : '';
+    if (tr.mode === 'color' && !info.color && !info.isGroup) tr.mode = info.ct ? 'ct' : 'bri';
     const members = info.members;
     const isGroup = members.length > 0;
     const selT = this._sel && this._sel.ti === ti && !this._sel.m;
