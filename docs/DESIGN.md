@@ -47,20 +47,23 @@ Beide bestehen aus denselben Bausteinen: Bibliothek, Transport, Zeitleiste, Insp
 - Rechts davon der Inhalt (Parameter, Zeitleiste, Werte). Abstand zur Spalte 16 px.
 - Außenabstand 24 px (breit) bzw. 16 px (schmal).
 
-**Höhen** (Grundmaß 8 px; Linien zählen zur Höhe)
+**Höhen** (Grundmaß 8 px; Linien zählen zur Höhe; Inhalt vor Rahmen)
 | Band | Höhe |
 |---|---|
-| Kopf links (Bibliothek) und Transport rechts | 72 px – gleich hoch, eine durchgehende Linie |
-| Parameter | 72 px je Zeile (umbricht in ganzen Zeilen) |
-| Lineal | 40 px |
+| Kopf links (Bibliothek) und Werkzeugleiste rechts | 56 px – gleich hoch |
+| Lineal | 32 px |
 | Spur | 88 px (Lichtdisplay 72 px) |
 | Gruppenmitglied | 64 px (Lichtdisplay 48 px) |
-| Spur hinzufügen | 56 px |
-| Inspektor | 72 px Werte + 48 px Aktionen |
-| Fuß links und rechts | 64 px – gleich hoch |
-| Eintrag in der Bibliothek | 96 px |
+| Spur hinzufügen | 48 px |
+| Inspektor | 56 px Werte + 40 px Aktionen |
+| Fuß links und rechts | 56 px – gleich hoch |
+| Eintrag in der Bibliothek | 80 px |
 
-**Zellenformel**: 12 px Rand + 16 px Beschriftung + 4 px + 40 px Bedienelement = 72 px.
+**Werkzeugleiste**: alles Häufige in einer Zeile (Play, Stopp, Zeit, Name mit Status darunter, Länge, Schleife, Gesamthelligkeit). Seltenes (Einblenden, Ende, Übergang, genaue Länge) hinter „…“.
+
+**Hierarchie**: Inhalt (Spuren) groß; Name 14/600; Status und Hinweise 11 px in Nebentextfarbe.
+
+**Zellenformel** (Inspektor): 6 px Rand + 14 px Beschriftung + 2 px + 32 px Feld ≈ 56 px.
 
 **Bedienhöhen**: Tasten 48 · Felder und Knöpfe 40 · klein (Segmente, Chips, Aktionen) 32.
 

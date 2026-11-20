@@ -1009,7 +1009,8 @@ class FadeStudioCard extends HTMLElement {
     this._ro?.disconnect();
   }
   _onKey(e) {
-    if (e.key === 'Escape' && (SESSION.settingsOpen || this._gen)) {
+    if (e.key === 'Escape' && (SESSION.settingsOpen || this._gen || SESSION.optsOpen)) {
+      SESSION.optsOpen = false;
       SESSION.settingsOpen = false;
       this._gen = null;
       this._render();
@@ -1631,49 +1632,50 @@ class FadeStudioCard extends HTMLElement {
       ${this._wide() ? this._libHtml() : ''}
       <section class="main">
         ${back}
-        <div class="transport">
-          <div class="keys">
+        <div class="toolbar">
+          <div class="tb-l">
             <button class="key" id="play" ${s.id ? '' : 'disabled'}></button>
             <button class="key" id="stop" ${s.id ? '' : 'disabled'} title="Sanft stoppen – mit dem eingestellten Ende">${this._ic('stop')}</button>
+            <span class="time mono"><span id="clk">0.0</span><span class="tot"> / ${r1(s.length)} s</span></span>
           </div>
-          <div class="clock"><div class="t mono"><span id="clk">0.0</span><span class="tot">/ ${r1(s.length)} s</span></div><div class="lbl" id="status"></div></div>
-          <span></span>
-          <div class="master" title="Regelt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis, auch während er läuft. 100 % = der hellste Punkt des Ablaufs leuchtet mit voller Helligkeit.">
-            ${
-              dimmer
-                ? `<span class="lbl">Helligkeit gesamt</span><input type="range" class="rng" id="dimmer" min="0" max="100" step="1" value="${dimmer.state}"><span class="mono val" id="dimv">${Math.round(dimmer.state)} %</span>`
-                : '<span class="lbl">Helligkeit gesamt – nach dem Speichern</span>'
-            }
+          <div class="tb-name">
+            <input class="name-in" id="name" value="${esc(s.name)}" title="Name des Ablaufs">
+            <span class="status" id="status"></span>
           </div>
-        </div>
-
-        <div class="params">
-          <div class="cell col1"><span class="lbl">Name</span><input class="fld name" id="name" value="${esc(s.name)}"></div>
-          <div class="pgroup">
-          <div class="cell wide2"><span class="lbl">Länge</span><span class="chips">${[15, 30, 45, 60]
-            .map((v) => `<button class="chip mono ${s.length === v ? 'on' : ''}" data-len="${v}">${v}</button>`)
-            .join('')}<input class="fld mono num" id="length" type="number" min="2" max="600" step="1" value="${r1(s.length)}" title="Länge in Sekunden"><span class="u">s</span></span></div>
-          <div class="cell"><span class="lbl">Schleife</span><input type="checkbox" class="sw" id="loop" ${s.loop ? 'checked' : ''}></div>
-          <div class="cell"><span class="lbl">Einblenden</span><span class="v"><input class="fld mono num" id="fadeIn" type="number" min="1" step="1" value="${s.fadeIn}"><span class="u">s</span></span></div>
-          <div class="cell"><span class="lbl">Am Ende</span>
-            <select class="fld" id="endMode">${[
-              ['restore', 'Vorher-Zustand'],
-              ['hold', 'So lassen'],
-              ['off', 'Ausschalten'],
-              ['scene', 'Szene'],
-            ]
-              .map(([v, t]) => `<option value="${v}" ${s.end.mode === v ? 'selected' : ''}>${t}</option>`)
-              .join('')}</select>
-            ${
-              s.end.mode === 'scene'
-                ? `<select class="fld" id="endScene"><option value="">Szene wählen</option>${scenes
-                    .map((e) => `<option value="${e}" ${e === s.end.scene ? 'selected' : ''}>${esc(h.states[e].attributes.friendly_name || e)}</option>`)
-                    .join('')}</select>`
-                : ''
-            }
+          <select class="fld sm mono" id="lenSel" title="Länge des Ablaufs">${[...new Set([10, 15, 20, 30, 45, 60, r1(s.length)])]
+            .sort((x, y) => x - y)
+            .map((v) => `<option value="${v}" ${v === r1(s.length) ? 'selected' : ''}>${v} s</option>`)
+            .join('')}</select>
+          <button class="ib tgl ${s.loop ? 'on' : ''}" id="loopBtn" title="Schleife: ${s.loop ? 'an' : 'aus'}">${this._ic('repeat')}</button>
+          <button class="ib ${SESSION.optsOpen ? 'on' : ''}" id="optsBtn" title="Optionen: Einblenden, Ende, Übergang, genaue Länge">${this._ic('dots-horizontal')}</button>
+          <div class="tb-dim" title="Helligkeit gesamt: regelt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis, auch während er läuft. 100 % = der hellste Punkt leuchtet voll.">
+            ${this._ic('brightness-6')}
+            ${dimmer ? `<input type="range" class="rng" id="dimmer" min="0" max="100" step="1" value="${dimmer.state}"><span class="mono val" id="dimv">${Math.round(dimmer.state)} %</span>` : '<span class="hint">nach dem Speichern</span>'}
           </div>
-          <div class="cell"><span class="lbl">Übergang</span><span class="v"><input class="fld mono num" id="endFade" type="number" min="0" step="1" value="${s.end.fade}" ${s.end.mode === 'hold' ? 'disabled' : ''}><span class="u">s</span></span></div>
-        </div>
+          ${
+            SESSION.optsOpen
+              ? `<div class="opts">
+                  <label><span>Länge</span><span class="v"><input class="fld sm mono num" id="length" type="number" min="2" max="600" step="1" value="${r1(s.length)}"><span class="u">s</span></span></label>
+                  <label><span>Einblenden</span><span class="v"><input class="fld sm mono num" id="fadeIn" type="number" min="1" step="1" value="${s.fadeIn}"><span class="u">s</span></span></label>
+                  <label><span>Am Ende</span><select class="fld sm" id="endMode">${[
+                    ['restore', 'Vorher-Zustand'],
+                    ['hold', 'So lassen'],
+                    ['off', 'Ausschalten'],
+                    ['scene', 'Szene'],
+                  ]
+                    .map(([v, t]) => `<option value="${v}" ${s.end.mode === v ? 'selected' : ''}>${t}</option>`)
+                    .join('')}</select></label>
+                  ${
+                    s.end.mode === 'scene'
+                      ? `<label><span>Szene</span><select class="fld sm" id="endScene"><option value="">Szene wählen</option>${scenes
+                          .map((e) => `<option value="${e}" ${e === s.end.scene ? 'selected' : ''}>${esc(h.states[e].attributes.friendly_name || e)}</option>`)
+                          .join('')}</select></label>`
+                      : ''
+                  }
+                  <label><span>Übergang am Ende</span><span class="v"><input class="fld sm mono num" id="endFade" type="number" min="0" step="1" value="${s.end.fade}" ${s.end.mode === 'hold' ? 'disabled' : ''}><span class="u">s</span></span></label>
+                </div>`
+              : ''
+          }
         </div>
 
         <div class="tl" id="tl">
@@ -1798,7 +1800,7 @@ class FadeStudioCard extends HTMLElement {
         .join('')}<label class="own ${own ? 'sel' : ''}" style="background:${kf.c}" title="Eigene Farbe wählen"><input type="color" id="kfC" value="${kf.c}"></label></span></div>`;
     }
     return `<div class="insp">
-      <div class="cell who col1"><span class="lbl" title="${esc(info.name)}">Punkt ${order.indexOf(sel.ki) + 1} von ${tr.kfs.length} · ${esc(info.name)}</span><span class="v"><input class="fld mono num" id="kfT" type="number" min="0" max="${this._show.length}" step="0.1" value="${r1(kf.t)}" title="Zeit des Punkts"><span class="u">s</span></span></div>
+      <div class="cell who col1"><span class="lbl" title="${esc(info.name)}">Punkt ${order.indexOf(sel.ki) + 1} von ${tr.kfs.length} · ${esc(info.name)}</span><span class="v"><input class="fld sm mono num" id="kfT" type="number" min="0" max="${this._show.length}" step="0.1" value="${r1(kf.t)}" title="Zeit des Punkts"><span class="u">s</span></span></div>
       <div class="ibody"><div class="irow">
       <div class="cell"><span class="lbl">Helligkeit</span><div class="ctl"><input type="range" class="rng" id="kfB" min="0" max="100" step="1" value="${Math.round(kf.b)}"><span class="mono val" id="kfBv">${Math.round(kf.b)} %</span></div></div>
       <div class="cell grow2"><span class="lbl">${tr.mode === 'color' ? 'Farbe' : 'Weißton'}</span>${tone}</div>
@@ -2099,6 +2101,7 @@ class FadeStudioCard extends HTMLElement {
     const st = r.querySelector('#status');
     if (st) {
       st.innerHTML = `${run ? '<i class="led"></i>' : ''}${esc(this._status())}`;
+      st.title = this._status();
       st.classList.toggle('on', run);
     }
     const dim = r.querySelector('#dimmer');
@@ -2309,6 +2312,9 @@ class FadeStudioCard extends HTMLElement {
     all('[data-len]', (el) => this._setLength(el.dataset.len));
     on('#length', 'change', (e) => this._setLength(e.target.value));
     on('#loop', 'change', (e) => ((s.loop = e.target.checked), (this._dirty = true), this._render()));
+    on('#loopBtn', 'click', () => ((s.loop = !s.loop), (this._dirty = true), this._render()));
+    on('#lenSel', 'change', (e) => this._setLength(e.target.value));
+    on('#optsBtn', 'click', () => ((SESSION.optsOpen = !SESSION.optsOpen), this._render()));
     on('#fadeIn', 'change', (e) => ((s.fadeIn = Math.max(1, Number(e.target.value) || 1)), this._markDirty()));
     on('#endMode', 'change', (e) => ((s.end.mode = e.target.value), (this._dirty = true), this._render()));
     on('#endScene', 'change', (e) => ((s.end.scene = e.target.value), this._markDirty()));
@@ -2865,6 +2871,53 @@ const STYLE = `
   .sub .th { padding: 6px 12px 6px 48px; gap: 0; }
   .sub .th .nm2, .sub .th .meta { min-height: 26px; }
   .cell > * { flex-shrink: 0; }
+
+  /* ===== Kompakt: Inhalt vor Rahmen =====
+     Kopf/Werkzeugleiste 56 · Lineal 32 · Spur 88 · Mitglied 64 · Spur hinzufügen 48 ·
+     Inspektor 56 + 40 · Fuß 56 · Bibliothekseintrag 80. Bedienhöhen 40 / 32 / 28. */
+  ha-card.fs { --band: 56px; --foot: 56px; }
+  .hd { height: 56px; }
+  .title { font-size: 14px; }
+  .toolbar { position: relative; height: 56px; box-sizing: border-box; display: grid; grid-template-columns: var(--col) minmax(120px, 1fr) auto auto auto minmax(160px, 220px); align-items: center; column-gap: 8px; padding-right: 16px; border-bottom: 1px solid var(--line); }
+  .narrow .toolbar { grid-template-columns: auto 1fr auto auto auto; padding-left: 12px; }
+  .narrow .tb-dim { display: none; }
+  .tb-l { display: flex; align-items: center; gap: 6px; padding-left: 16px; }
+  .toolbar .key { width: 40px; height: 40px; border-radius: 10px; --mdc-icon-size: 20px; }
+  .time { font-size: 18px; margin-left: 6px; letter-spacing: -.01em; white-space: nowrap; }
+  .time .tot { font-size: 12px; color: var(--ink-2); }
+  .tb-name { display: flex; flex-direction: column; min-width: 0; padding-left: 8px; }
+  .name-in { font: inherit; font-size: 14px; font-weight: 600; color: var(--ink); background: transparent; border: 0; border-bottom: 1px solid transparent; padding: 1px 0; min-width: 0; }
+  .name-in:hover, .name-in:focus { border-bottom-color: var(--line); outline: none; }
+  .status { font-size: 11px; line-height: 14px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status.on, #status.on { color: var(--acc); }
+  .fld.sm { height: 32px; font-size: 13px; padding: 0 8px; }
+  .fld.sm.num { width: 64px; }
+  .ib.tgl { color: var(--ink-2); }
+  .ib.tgl.on, .ib.on { color: var(--acc); }
+  .tb-dim { display: grid; grid-template-columns: 20px 1fr 40px; align-items: center; gap: 8px; color: var(--ink-2); --mdc-icon-size: 18px; }
+  .tb-dim .val { font-size: 12px; color: var(--ink); }
+  .opts { position: absolute; right: 16px; top: 52px; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; display: flex; flex-direction: column; min-width: 260px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  .opts label { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 40px; font-size: 13px; color: var(--ink-2); }
+  .ruler .ln, .row.ruler { height: 32px; }
+  .tlab { bottom: 12px; font-size: 11px; }
+  .tick.M { height: 10px; }
+  .addrow { height: 48px; }
+  .addrow .fld { height: 32px; font-size: 13px; }
+  .gb { height: 28px; font-size: 12px; --mdc-icon-size: 16px; }
+  .item { min-height: 80px; padding: 10px 12px 10px 20px; }
+  .item .disp { margin-top: 6px; height: 16px; }
+  .lib .ft .btn, .foot .btn { height: 36px; }
+  .insp .who { height: 56px; padding: 6px 16px 6px 24px; gap: 2px; }
+  .insp .who .lbl { font-size: 11px; line-height: 14px; }
+  .irow { min-height: 56px; }
+  .irow .cell { height: 56px; padding: 6px 16px; gap: 2px; }
+  .irow .cell .lbl { font-size: 11px; line-height: 14px; }
+  .insp .acts { min-height: 40px; padding: 0 16px; }
+  .sw-row { height: 28px; grid-auto-columns: 22px; }
+  .sw-row button, .sw-row .own { width: 22px; height: 22px; }
+  .guide { z-index: 4; }
+  .guide b { top: 16px; }
+  .item { height: 80px; min-height: 0; }
 `;
 
 customElements.define('fade-studio-card', FadeStudioCard);
