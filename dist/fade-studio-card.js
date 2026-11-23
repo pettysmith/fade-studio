@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.9.0';
+const FS_VERSION = '0.9.1';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
