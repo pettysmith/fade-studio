@@ -2957,6 +2957,25 @@ const STYLE = `
   .del { color: var(--ink-2); }
   /* Chips: Linie, aktiv orange */
   .chip { border-radius: 6px; }
+  /* Nativer Look (wie Home Assistant): Knöpfe mit Fläche, runde Symbole, runder Reglerknopf */
+  .btn, .btn.sec { height: 40px; padding: 0 16px; border-radius: 10px; border: 0; background: var(--well); color: var(--ink); font-size: 14px; }
+  .btn.sec:hover, .btn:hover { filter: brightness(1.12); }
+  .btn.pri { background: var(--ink); color: var(--panel); border: 0; }
+  .key, .toolbar .key { background: var(--well); border: 0; }
+  #play { background: var(--acc); color: var(--acc-ink); }
+  #play:disabled { background: var(--well); color: var(--ink); }
+  .ib { width: 40px; height: 40px; color: var(--ink); border-radius: 50%; }
+  .ib:hover { background: var(--well); color: var(--ink); }
+  .ib.tgl { color: var(--ink-2); }
+  .ib.tgl.on, .ib.on { color: var(--acc); }
+  .rng { height: 24px; }
+  .rng::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; }
+  .rng::-moz-range-track { height: 4px; border-radius: 2px; }
+  .rng::-moz-range-progress { height: 4px; border-radius: 2px; }
+  .rng::-webkit-slider-thumb { width: 18px; height: 18px; margin-top: -7px; border-radius: 50%; background: var(--acc); }
+  .rng::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--acc); }
+  .rng:hover::-webkit-slider-thumb, .rng:active::-webkit-slider-thumb { background: var(--acc); box-shadow: 0 0 0 6px color-mix(in srgb, var(--acc) 20%, transparent); }
+  .rng:hover::-moz-range-thumb, .rng:active::-moz-range-thumb { background: var(--acc); }
   /* Felder und Kacheln: Linie statt Fläche */
   .fld { background: transparent; border: 1px solid var(--line); }
   .fld:hover { border-color: var(--ink-2); }

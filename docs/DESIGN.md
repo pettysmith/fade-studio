@@ -108,15 +108,18 @@ Beide bestehen aus denselben Bausteinen: Bibliothek, Transport, Zeitleiste, Insp
 
 ## Bedienelemente (System)
 
+Nativer Look wie in Home Assistant, Farben nach dieser Datei.
+
 | Art | Aussehen | Einsatz |
 |---|---|---|
-| Primär | dunkel gefüllt, 36 px | genau einer je Ansicht: Speichern |
-| Sekundär | 1-px-Linie, keine Fläche, 36 px | Neu, Vorlage, Verwerfen |
+| Primär | dunkel gefüllt, 40 px, Radius 10 | genau einer je Ansicht: Speichern |
+| Sekundär | grau gefüllt, 40 px, Radius 10 | Neu, Vorlage, Verwerfen |
 | Leise | nur Text + Symbol, Hover orange | Aktionen im Inspektor, Spur hinzufügen, Ablauf löschen |
-| Taste | 1-px-Linie, 40 px; Play orange gefüllt, solange es läuft | Transport |
-| Symbol | rund, ohne Linie, Nebentextfarbe; aktiv orange | Schleife, Optionen, Einstellungen |
+| Play | immer orange gefüllt – die wichtigste Taste | Transport |
+| Stopp | grau gefüllt | Transport |
+| Symbol | rund 40 px, Hover-Kreis; aktiv orange | Schleife, Optionen, Einstellungen |
 | Feld | 1-px-Linie, Fokus orange | Zahlen, Auswahl |
-| Regler | 2-px-Strich, orange bis zum Wert, Fader-Knopf 6 × 18 px | Helligkeit |
+| Regler | 4-px-Schiene, orange bis zum Wert, runder Knopf 18 px | Helligkeit |
 
 Spur-Werkzeuge (Griff, Entfernen) erscheinen mit Maus nur bei Hover oder an der gewählten Spur; auf Touch-Geräten immer.
 
