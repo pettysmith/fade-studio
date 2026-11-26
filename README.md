@@ -35,12 +35,14 @@ Abgespielt wird ausschließlich von Home Assistant selbst. Jeder Abschnitt der Z
   - **☁ Ambient Drift** – ruhiges, zeitversetztes Gleiten zwischen hell/kühler und dunkel/wärmer
   - **🕯 Candle Glow** – sehr warmes Licht, das unregelmäßig und weich auf- und abschwillt, jede Lampe für sich
   - **≈ Breathe** – sanftes Heller und Dunkler, als Welle durch die Räume
-  - **🌇 Dusk** – Farblampen ziehen durch Bernstein, Koralle, Rosé, Violett; Weiß-Lampen gedämpft warm
-  - **🌌 Aurora** – Farblampen gleiten durch Türkis, Grün, Blau, Violett; Weiß-Lampen schwach kühl
+  - **🌇 Dusk** – Farblampen ziehen durch Bernstein, Koralle, Rosé, Violett; Ambient- und Weiß-Lampen gedämpft warm
+  - **🌌 Aurora** – Farblampen gleiten durch Türkis, Grün, Blau, Violett; Ambient- und Weiß-Lampen schwach kühl
   - **✦ Color Accent** – pro Raum eine Farblampe mit zügigen, kontrastreichen Farbwechseln; die übrigen ruhig warmweiß
   - **⇅ Seesaw** – zwei Hälften wechseln sich ab: eine hell, die andere dunkel
   - **〰 Ripple** – ein heller Impuls wandert der Reihe nach über die Lampen
   - **✧ Twinkle** – mal hier, mal dort leuchtet eine Lampe kurz auf
+  - **● Red Dot** – alle Lampen gedämpft warm mit kaum merklichem Flackern; ein satter roter Punkt wandert Raum für Raum über die Farblampen (eine Lampe: 3× Leuchtturm, zwei: 3× Pingpong)
+- **Schlafen** (Mond-Taste): Der Ablauf läuft noch die eingestellte Zeit, blendet dann aus und schaltet die Lampen des Ablaufs oder alle Lampen im Haus aus (⚙ Einstellungen)
 - **Leuchtenprofile** (⚙ → Leuchten): Was eine Leuchte kann, meldet sie selbst. Je Modell (Hersteller + Modellkennung) lässt sich festlegen: Farben verwenden, Weißtöne verwenden, Ton und Helligkeit nacheinander (Ikea-Modus), Zurückstellen ohne Überblendung. Standards je Hersteller, jederzeit anpassbar. Farben gehen als xy-Werte an die Lampen.
 - **Automatisch stoppen** (⚙ Einstellungen):
   - wenn eine Lampe eines laufenden Ablaufs von außen ausgeschaltet wird (Schalter, App, Sprachbefehl, „Alles aus“) – der Ablauf erkennt das selbst. Danach wahlweise alle Lampen des Ablaufs ausschalten (Standard, mit Nachkontrolle nach 2 s) oder nur die ausgeschalteten aus lassen
@@ -86,6 +88,14 @@ data:
   variables:
     finish: true
 
+# schlafen: noch 20 min laufen, dann ausblenden und ausschalten
+action: script.turn_on
+target:
+  entity_id: script.fade_studio_ambient_drift
+data:
+  variables:
+    sleep: 20
+
 # Gesamthelligkeit
 action: input_number.set_value
 target:
@@ -95,6 +105,32 @@ data:
 ```
 
 `script.turn_off` stoppt hart (ohne Ende-Verhalten).
+
+### Auf anderen Dashboards
+
+Abläufe sind normale Skripte, der Gesamtregler ein normaler `input_number` – dafür reichen die Kacheln von Home Assistant:
+
+```yaml
+type: tile
+entity: script.fade_studio_red_dot
+name: Red Dot
+tap_action:            # Antippen: starten
+  action: perform-action
+  perform_action: script.turn_on
+  target: { entity_id: script.fade_studio_red_dot }
+hold_action:           # Gedrückt halten: sanft beenden
+  action: perform-action
+  perform_action: script.turn_on
+  target: { entity_id: script.fade_studio_red_dot }
+  data: { variables: { finish: true } }
+---
+type: tile
+entity: input_number.fade_studio_red_dot_dimmer
+name: Helligkeit
+features:
+  - type: numeric-input
+    style: slider
+```
 
 ## Entfernen
 

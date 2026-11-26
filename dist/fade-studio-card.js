@@ -5,12 +5,12 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.9.1';
+const FS_VERSION = '0.9.2';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
 const AUTO_ID = 'fade_studio_autostop';
-const DEFAULT_SETTINGS = { stop_away: true, away_action: 'off', stop_external_off: true, off_action: 'all', profiles: {} };
+const DEFAULT_SETTINGS = { stop_away: true, away_action: 'off', stop_external_off: true, off_action: 'all', sleep_min: 20, sleep_fade: 60, sleep_scope: 'show', profiles: {} };
 
 /* ------------------------------------------------------------------ */
 /* Hilfsfunktionen                                                     */
@@ -443,7 +443,17 @@ function trackBranch(show, tr, dimmer, ti, o) {
           ...seg,
         ],
       },
-      ...(show.loop ? [{ repeat: { while: tpl('{{ true }}'), sequence: body } }] : body),
+      // Schleife bis zum Schlafen-Ende; ohne Schleife ein Durchlauf – außer im Schlafmodus.
+      {
+        repeat: {
+          sequence: body,
+          until: tpl(
+            show.loop
+              ? '{{ fs_sleep_end > 0 and as_timestamp(now()) >= fs_sleep_end }}'
+              : '{{ fs_sleep_end == 0 or as_timestamp(now()) >= fs_sleep_end }}'
+          ),
+        },
+      },
     ],
   };
 }
@@ -543,14 +553,28 @@ function buildScript(show, settings = DEFAULT_SETTINGS, play = null) {
   });
   const o = { stopOnOff: settings.stop_external_off !== false, scriptEid: `script.${id}`, snap };
   const peak = Math.max(1, ...tracks.flatMap((t) => (t.kfs || []).map((k) => Number(k.b) || 0)));
-  seq.push({ variables: { fs_gain: Math.round((100 / peak) * 1000) / 1000 } });
+  seq.push({
+    variables: {
+      fs_gain: Math.round((100 / peak) * 1000) / 1000,
+      fs_sleep_end: '{{ (as_timestamp(now()) + (sleep | default(0) | float(0)) * 60) if (sleep | default(0) | float(0)) > 0 else 0 }}',
+    },
+  });
   seq.push({ parallel: tracks.map((t, ti) => trackBranch(show, t, dimmer, ti, o)) });
+  // Schlafen: nach Ablauf der Zeit endet der Ablauf am Ende eines Durchlaufs und blendet aus.
+  const sleepOff =
+    settings.sleep_scope === 'all'
+      ? { action: 'light.turn_off', target: { entity_id: 'all' }, data: { transition: settings.sleep_fade ?? 60 } }
+      : { action: 'light.turn_off', target: { entity_id: lights }, data: { transition: settings.sleep_fade ?? 60 } };
+  seq.push({
+    if: tpl('{{ fs_sleep_end > 0 }}'),
+    then: [sleepOff, ...snapDelete(`'${snap}'`), { stop: 'Eingeschlafen' }],
+  });
   if (!show.loop) seq.push(...endActions(show, snap, lights));
   return {
     alias: `Fade Studio: ${show.name}`,
     description:
       'Erstellt mit der Fade-Studio-Karte – bitte dort bearbeiten. ' +
-      'Starten: script.turn_on. Sanft beenden: script.turn_on mit variables: {finish: true}.',
+      'Starten: script.turn_on. Sanft beenden: script.turn_on mit variables: {finish: true}. Schlafen: variables: {sleep: 20}.',
     icon: show.icon || 'mdi:transition',
     mode: 'restart',
     fields: {
@@ -558,6 +582,11 @@ function buildScript(show, settings = DEFAULT_SETTINGS, play = null) {
         name: 'Fortsetzen ab (s)',
         description: 'Optional: an dieser Stelle der Zeitleiste weitermachen (z. B. nach einer Pause).',
         selector: { number: { min: 0, max: 3600, step: 0.1, mode: 'box' } },
+      },
+      sleep: {
+        name: 'Schlafen (min)',
+        description: 'Optional: so viele Minuten laufen, dann ausblenden und ausschalten (nur diese Lampen oder alle – siehe Einstellungen).',
+        selector: { number: { min: 0, max: 240, step: 1, unit_of_measurement: 'min', mode: 'box' } },
       },
       finish: {
         name: 'Sanft beenden',
@@ -687,6 +716,11 @@ function byArea(hass, eids) {
   return [...groups.values()];
 }
 
+/** Verstärkung wie im Skript: der hellste Punkt des Ablaufs leuchtet bei 100 % voll. Für die Anzeige. */
+function showGain(sh) {
+  const all = (sh?.tracks || []).flatMap((t) => [...(t.kfs || []), ...Object.values(t.members || {}).flatMap((m) => m?.kfs || [])]);
+  return 100 / Math.max(1, ...all.map((k) => Number(k.b) || 0));
+}
 const MAX_LEN = 60; // keine Vorlage läuft länger als eine Minute, bevor sie sich wiederholt
 const ctKf = (info, t, b, k) => {
   const kk = Math.round(clamp(k, info.minK, info.maxK));
@@ -838,6 +872,75 @@ function genSeesaw(hass, eids, p) {
   });
 }
 
+/**
+ * Red Dot: Alle Lampen glimmen gedämpft warm und flackern kaum merklich. Über die Farblampen wandert ein
+ * satter roter Punkt – Raum für Raum. Eine Farblampe im Raum pulsiert 3× wie ein Leuchtturm, zwei spielen
+ * 3× Pingpong, ab drei läuft der Punkt einmal durch alle. Danach wechselt er in den nächsten Raum.
+ */
+function genDot(hass, eids, p) {
+  const warm = rgbToHex(kelvinToRgb(p.k));
+  // Besuche planen: [{eid, t, pulse}] in Schritten
+  const plan = [];
+  let n = 1; // erst ein Takt Ruhe, dann der erste Raum
+  for (const group of byArea(hass, eids)) {
+    const cl = group.filter((e) => showsColor(lightInfo(hass, e)));
+    if (!cl.length) continue;
+    if (cl.length === 1) for (let i = 0; i < 3; i++) plan.push({ eid: cl[0], at: n++, pulse: i < 2 });
+    else if (cl.length === 2) for (let i = 0; i < 6; i++) plan.push({ eid: cl[i % 2], at: n++ });
+    else cl.forEach((e) => plan.push({ eid: e, at: n++ }));
+    n += 1; // kurze Pause beim Raumwechsel
+  }
+  const step = n ? Math.min(p.step, MAX_LEN / n) : p.step;
+  const L = n ? r1(Math.max(n * step, 10)) : clamp(p.length, 10, MAX_LEN);
+  const flicker = (info, ct, from, to) => {
+    const out = [];
+    let t = from + rand(0, p.speed);
+    while (t < to - p.speed * 0.5) {
+      const b = p.base * (1 - (rand(0, 1) * p.depth) / 100);
+      out.push(ct ? ctKf(info, t, b, p.k + rand(-80, 100)) : { t: r1(t), b: r1(b), k: p.k, c: warm });
+      t += p.speed * rand(0.7, 1.4);
+    }
+    return out;
+  };
+  return {
+    length: L,
+    tracks: eids.map((eid) => {
+      const info = lightInfo(hass, eid);
+      const visits = plan.filter((v) => v.eid === eid);
+      if (!visits.length) {
+        const { mode, split } = trackDefaults(info, 'ct');
+        return { entity: eid, mode, split, kfs: sortKfs(flicker(info, mode !== 'color', 0, L)) };
+      }
+      const { split } = trackDefaults(info, 'color');
+      // Zeitfenster der Besuche: dort kein Flackern, sondern Rot
+      const wins = [];
+      for (const v of visits) {
+        const t = v.at * step;
+        const last = wins[wins.length - 1];
+        if (last && t - last.to < step * 1.2) last.to = t + step * 0.6;
+        else wins.push({ from: t - step * 0.5, to: t + step * 0.6 });
+      }
+      const kfs = [];
+      let cur = 0;
+      for (const w of wins) {
+        kfs.push(...flicker(info, false, cur, Math.max(cur, w.from)));
+        kfs.push({ t: r1(Math.max(0, w.from)), b: p.base, k: p.k, c: warm });
+        cur = w.to;
+      }
+      kfs.push(...flicker(info, false, cur, L));
+      for (const v of visits) {
+        const t = v.at * step;
+        kfs.push({ t: r1(t), b: p.hi, k: p.k, c: p.color });
+        if (v.pulse) kfs.push({ t: r1(t + step * 0.5), b: r1(p.hi * 0.15), k: p.k, c: p.color });
+      }
+      for (const w of wins) kfs.push({ t: r1(Math.min(w.to, L - 0.1)), b: p.base, k: p.k, c: warm });
+      // doppelte Zeiten vermeiden, im Bereich halten
+      const seen = new Set();
+      const clean = sortKfs(kfs.map((k) => ({ ...k, t: wrap(k.t, L) }))).filter((k) => !seen.has(k.t) && seen.add(k.t));
+      return { entity: eid, mode: 'color', split, kfs: clean };
+    }),
+  };
+}
 const DUSK = ['#ff8c3a', '#ff5a5a', '#ff4f8b', '#a35cff'];
 const AURORA = ['#00e0c0', '#3cff7a', '#2a7bff', '#8a4dff'];
 
@@ -874,6 +977,20 @@ const TEMPLATES = {
       num('k', 'Weißton', 'K', 1800, 3000, 50),
     ],
     build: (hass, eids, p, ctx) => ({ tracks: genCandle(hass, eids, p, ctx), length: clamp(p.length, 10, MAX_LEN) }),
+  },
+  dot: {
+    name: 'Red Dot',
+    desc: 'Alle Lampen glimmen gedämpft warm und flackern kaum merklich – stört nicht beim Essen oder Arbeiten. Über die Farblampen wandert ein satter roter Punkt Raum für Raum: eine Farblampe pulsiert 3× wie ein Leuchtturm, zwei spielen 3× Pingpong, ab drei läuft er durch alle.',
+    defaults: { step: 0.8, base: 30, depth: 20, speed: 3, k: 2200, hi: 100, color: '#ff1a10', length: 20 },
+    params: [
+      num('step', 'Takt des Punkts', 's', 0.4, 3, 0.1),
+      num('hi', 'Punkt', '%', 10, 100),
+      num('base', 'Grundlicht', '%', 5, 100),
+      num('depth', 'Flackern', '%', 0, 50),
+      num('speed', 'Flackern etwa alle', 's', 1.5, 10, 0.5),
+      num('k', 'Weißton', 'K', 1800, 3000, 50),
+    ],
+    build: (hass, eids, p) => genDot(hass, eids, p),
   },
   breathe: {
     name: 'Breathe',
@@ -1063,6 +1180,26 @@ class FadeStudioCard extends HTMLElement {
       .sort((a, b) => (a.area || 'zzz').localeCompare(b.area || 'zzz') || a.name.localeCompare(b.name));
   }
 
+  /** Ablauf aus einem Skript lesen: WebSocket liest die geladene Konfiguration aus dem Speicher (schnell),
+   *  REST nur als Rückfall (liest scripts.yaml jedes Mal neu von der Platte). */
+  async _showOf(eid) {
+    let cfg;
+    try {
+      cfg = (await this._hass.callWS({ type: 'script/config', entity_id: eid }))?.config;
+    } catch (e) {
+      cfg = await this._hass.callApi('GET', `config/script/config/${eid.replace('script.', '')}`);
+    }
+    return cfg?.variables?.fade_studio?.show || null;
+  }
+  /** Alle Abläufe parallel lesen. */
+  async _allShows() {
+    const ids = this._showIds();
+    const res = await Promise.all(ids.map((eid) => this._showOf(eid).catch(() => undefined)));
+    const out = {};
+    ids.forEach((eid, i) => res[i] !== undefined && (out[eid] = res[i]));
+    return out;
+  }
+
   async _loadShow(scriptEid) {
     if (!scriptEid) {
       this._newShow();
@@ -1071,8 +1208,7 @@ class FadeStudioCard extends HTMLElement {
     }
     const id = scriptEid.replace('script.', '');
     try {
-      const cfg = await this._hass.callApi('GET', `config/script/config/${id}`);
-      const show = cfg?.variables?.fade_studio?.show;
+      const show = await this._showOf(scriptEid);
       if (!show) throw new Error('Dieses Skript enthält keine Fade-Studio-Zeitleiste.');
       this._show = { end: { mode: 'restore', fade: 5, scene: '' }, ...show, id };
       this._sel = null;
@@ -1126,7 +1262,10 @@ class FadeStudioCard extends HTMLElement {
     let st = { ...DEFAULT_SETTINGS };
     if (this._autoEid()) {
       try {
-        const cfg = await this._hass.callApi('GET', `config/automation/config/${AUTO_ID}`);
+        const cfg = await this._hass
+          .callWS({ type: 'automation/config', entity_id: this._autoEid() })
+          .then((r) => r.config)
+          .catch(() => this._hass.callApi('GET', `config/automation/config/${AUTO_ID}`));
         st = { ...st, ...(cfg?.variables?.fade_studio_settings || {}) };
       } catch (e) {
         /* noch nicht vorhanden */
@@ -1139,15 +1278,8 @@ class FadeStudioCard extends HTMLElement {
   /** Schreibt die Auto-Stopp-Automation passend zu allen Abläufen und Einstellungen neu. */
   async _syncAutomation(labelId) {
     const shows = {};
-    for (const eid of this._showIds()) {
-      try {
-        const cfg = await this._hass.callApi('GET', `config/script/config/${eid.replace('script.', '')}`);
-        const sh = cfg?.variables?.fade_studio?.show;
-        if (sh) shows[eid] = [...new Set(playTracks(this._hass, sh).map((t) => t.entity).filter(Boolean))];
-      } catch (e) {
-        /* übersprungen */
-      }
-    }
+    for (const [eid, sh] of Object.entries(await this._allShows()))
+      if (sh) shows[eid] = [...new Set(playTracks(this._hass, sh).map((t) => t.entity).filter(Boolean))];
     await this._hass.callApi('POST', `config/automation/config/${AUTO_ID}`, buildAutomation(this._settings, shows));
     const lid = labelId || (await this._ensureLabel());
     for (let i = 0; i < 20 && !this._autoEid(); i++) await new Promise((r) => setTimeout(r, 300));
@@ -1159,10 +1291,8 @@ class FadeStudioCard extends HTMLElement {
     if (!this._hass.user?.is_admin) return alert('Zum Speichern der Einstellungen sind Administratorrechte nötig.');
     SESSION.settings = { ...DEFAULT_SETTINGS, ...st };
     try {
-      for (const eid of this._showIds()) {
+      for (const [eid, show] of Object.entries(await this._allShows())) {
         const id = eid.replace('script.', '');
-        const cfg = await this._hass.callApi('GET', `config/script/config/${id}`);
-        const show = cfg?.variables?.fade_studio?.show;
         if (show) {
           const sh = { ...show, id };
           await this._hass.callApi('POST', `config/script/config/${id}`, buildScript(sh, SESSION.settings, playTracks(this._hass, sh)));
@@ -1424,6 +1554,27 @@ class FadeStudioCard extends HTMLElement {
     SESSION.phase = { id: this._show.id, until: Date.now() + (end.mode === 'hold' ? 1 : end.fade ?? 3) * 1000, text: `Blendet aus – ${what}` };
     this._hass.callService('script', 'turn_on', { entity_id: e, variables: { finish: true } });
   }
+  _sleepTitle() {
+    const st = this._settings;
+    return `Schlafen: läuft noch ${st.sleep_min} min, blendet dann in ${st.sleep_fade} s aus und schaltet ${st.sleep_scope === 'all' ? 'alle Lampen im Haus' : 'die Lampen dieses Ablaufs'} aus. Einstellbar unter ⚙.`;
+  }
+  _sleep() {
+    const e = this._scriptEid();
+    if (!e) return this._setMsg('Bitte zuerst speichern.');
+    const id = this._show.id;
+    const min = Number(this._settings.sleep_min) || 20;
+    const t = this._running() ? this._playTime() : this._paused();
+    delete SESSION.paused[id];
+    savePaused();
+    SESSION.sleep = { ...(SESSION.sleep || {}), [id]: Date.now() + min * 60000 };
+    const vars = { finish: false, sleep: min };
+    if (t != null) {
+      vars.start_at = r1(t);
+      SESSION.playBase[id] = { start: Date.now(), off: r1(t), fade: 0 };
+    } else SESSION.playBase[id] = { start: Date.now(), off: 0, fade: this._show.fadeIn || 0 };
+    this._hass.callService('script', 'turn_on', { entity_id: e, variables: vars });
+    this._setMsg(`Schlafen: in ${min} min aus.`);
+  }
   _setDimmer(v) {
     const d = `input_number.${this._show.id}_dimmer`;
     if (this._hass.states[d]) this._hass.callService('input_number', 'set_value', { entity_id: d, value: Number(v) });
@@ -1514,16 +1665,9 @@ class FadeStudioCard extends HTMLElement {
   async _loadLib() {
     if (SESSION.libLoading) return;
     SESSION.libLoading = true;
-    for (const eid of this._showIds()) {
-      if (eid in SESSION.lib) continue;
-      try {
-        const cfg = await this._hass.callApi('GET', `config/script/config/${eid.replace('script.', '')}`);
-        const sh = cfg?.variables?.fade_studio?.show;
-        SESSION.lib[eid] = sh || null;
-      } catch (e) {
-        SESSION.lib[eid] = null; // nicht erneut versuchen
-      }
-    }
+    const ids = this._showIds().filter((eid) => !(eid in SESSION.lib));
+    const res = await Promise.all(ids.map((eid) => this._showOf(eid).catch(() => null)));
+    ids.forEach((eid, i) => (SESSION.lib[eid] = res[i])); // null = nicht erneut versuchen
     SESSION.libLoading = false;
     this._render();
   }
@@ -1553,12 +1697,13 @@ class FadeStudioCard extends HTMLElement {
     const tr = (sh.tracks || []).filter((t) => t.entity);
     if (!tr.length) return Array.from({ length: n }, () => '<i style="height:6%;background:var(--gap)"></i>').join('');
     let out = '';
+    const g = showGain(sh);
     for (let i = 0; i < n; i++) {
       const t = ((i + 0.5) * sh.length) / n;
       const st = tr.map((x) => ({ kf: stateAt(x.kfs, sh.length, sh.loop, t), mode: x.mode }));
       const b = st.reduce((a, x) => a + x.kf.b, 0) / st.length;
       const top = st.reduce((a, x) => (x.kf.b > a.kf.b ? x : a), st[0]);
-      out += `<i style="height:${Math.max(6, Math.round(b))}%;background:${toneCss(top.kf, top.mode)}"></i>`;
+      out += `<i style="height:${Math.max(6, Math.min(100, Math.round(b * g)))}%;background:${toneCss(top.kf, top.mode)}"></i>`;
     }
     return out;
   }
@@ -1568,6 +1713,8 @@ class FadeStudioCard extends HTMLElement {
     const ph = SESSION.phase;
     if (ph && ph.id === this._show.id && Date.now() < ph.until)
       return `${ph.text.charAt(0).toUpperCase()}${ph.text.slice(1)} … ${Math.ceil((ph.until - Date.now()) / 1000)} s`;
+    const sl = SESSION.sleep?.[this._show.id];
+    if (this._running() && sl && sl > Date.now()) return `Schlafen · aus in ${Math.ceil((sl - Date.now()) / 60000)} min`;
     if (this._running()) return this._show.loop ? 'Läuft · Schleife' : 'Läuft';
     const pz = this._paused();
     return pz != null ? `Pausiert bei ${r1(pz).toFixed(1)} s` : 'Gestoppt';
@@ -1645,6 +1792,7 @@ class FadeStudioCard extends HTMLElement {
             ${this._wide() && SESSION.libHidden ? `<button class="ib" id="libBtn" title="Abläufe zeigen">${this._ic('dock-left')}</button>` : ''}
             <button class="key" id="play" ${s.id ? '' : 'disabled'}></button>
             <button class="key" id="stop" ${s.id ? '' : 'disabled'} title="Sanft stoppen – mit dem eingestellten Ende">${this._ic('stop')}</button>
+            <button class="key" id="sleep" ${s.id ? '' : 'disabled'} title="${this._sleepTitle()}">${this._ic('power-sleep')}</button>
             <span class="time mono"><span id="clk">0.0</span><span class="tot"> / ${r1(s.length)} s</span></span>
           </div>
           <div class="tb-name">
@@ -1750,7 +1898,7 @@ class FadeStudioCard extends HTMLElement {
     };
     const ikea = (ref, inf, m) =>
       (inf.split || ref.split) && ref.mode !== 'bri' && !inf.isGroup
-        ? `<button class="tag ${ref.split ? 'on' : ''}" data-split="${ti}"${m ? ` data-member="${m}"` : ''} title="${inf.ikea ? 'Ikea-Leuchte erkannt. ' : ''}Ikea-Modus: erst Ton, dann Helligkeit überblenden – verhindert Springen. Antippen zum Ein- oder Ausschalten.">${inf.ikea ? 'Ikea-Modus' : 'Nacheinander'}</button>`
+        ? `<button class="ib sm split ${ref.split ? 'on' : ''}" data-split="${ti}"${m ? ` data-member="${m}"` : ''} title="${inf.ikea ? 'Ikea-Modus' : 'Nacheinander'}: ${ref.split ? 'an' : 'aus'} – erst Ton, dann Helligkeit überblenden, verhindert Springen. Antippen zum Umschalten.">${this._ic('arrow-split-vertical')}</button>`
         : '';
     if (tr.mode === 'color' && !info.color && !info.isGroup) tr.mode = info.ct ? 'ct' : 'bri';
     const members = info.members;
@@ -1847,6 +1995,7 @@ class FadeStudioCard extends HTMLElement {
       <div class="rkeys band">
         <button class="key" id="play" data-cur="${cur}"></button>
         <button class="key" id="stop" title="Sanft stoppen">${this._ic('stop')}</button>
+        <button class="key" id="sleep" title="${this._sleepTitle()}">${this._ic('power-sleep')}</button>
       </div>
       <div class="rmaster band" title="Regelt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis, auch während er läuft. 100 % = der hellste Punkt des Ablaufs leuchtet mit voller Helligkeit.">
         <div class="top"><span class="lbl">Helligkeit gesamt</span><span class="mono" id="dimv">${dimmer ? Math.round(dimmer.state) + ' %' : '–'}</span></div>
@@ -1913,7 +2062,7 @@ class FadeStudioCard extends HTMLElement {
         )
         .join('')}</div>
       <div class="genparams">${T.params.map(field).join('')}</div>
-      <div class="dfoot"><span class="lbl">Ersetzt die Spuren des aktuellen Ablaufs.</span><span class="grow"></span><button class="btn txt" id="genCancel">Abbrechen</button><button class="btn pri" id="genOk">Erzeugen</button></div>
+      <div class="dfoot"><span class="lbl">Erzeugt einen neuen Ablauf.</span><span class="grow"></span><button class="btn txt" id="genCancel">Abbrechen</button><button class="btn pri" id="genOk">Erzeugen</button></div>
     </div></div>`;
   }
 
@@ -1973,6 +2122,10 @@ class FadeStudioCard extends HTMLElement {
       <div class="sec2"><span class="lbl">Automatisch stoppen</span></div>
       <div class="opt"><span>Niemand mehr zu Hause<small>Danach:</small>${sel('stAwayAction', [['off', 'Lampen ausschalten'], ['restore', 'Vorher-Zustand'], ['keep', 'So lassen']], st.away_action)}</span><input type="checkbox" class="sw" id="stAway" ${st.stop_away ? 'checked' : ''}></div>
       <div class="opt"><span>Lampe von außen ausgeschaltet<small>Schalter, App, Sprachbefehl. Danach:</small>${sel('stOffAction', [['all', 'Alle Lampen des Ablaufs aus'], ['keep', 'Übrige so lassen']], st.off_action === 'keep' ? 'keep' : 'all')}</span><input type="checkbox" class="sw" id="stOff" ${st.stop_external_off ? 'checked' : ''}></div>
+      <div class="sec2"><span class="lbl">Schlafen</span></div>
+      <div class="opt"><span>Dauer<small>So lange läuft der Ablauf nach Druck auf Schlafen weiter.</small></span><span class="v"><input class="fld sm mono num" id="stSleepMin" type="number" min="1" max="240" value="${st.sleep_min}"><span class="u">min</span></span></div>
+      <div class="opt"><span>Ausblenden<small>Dauer des Ausblendens am Ende.</small></span><span class="v"><input class="fld sm mono num" id="stSleepFade" type="number" min="0" max="600" value="${st.sleep_fade}"><span class="u">s</span></span></div>
+      <div class="opt"><span>Danach ausschalten</span>${sel('stSleepScope', [['show', 'Lampen dieses Ablaufs'], ['all', 'Alle Lampen im Haus']], st.sleep_scope)}</div>
       <div class="sec2"><span class="lbl">Diagnose</span></div>
       <div class="opt"><span>Lampen dieses Ablaufs testen<small>Wechselt ca. 6 s kräftig zwischen dunkel/warm und hell/kühl, misst die Reaktion jeder Lampe und stellt danach den vorherigen Zustand wieder her.</small></span><button class="btn" id="diag" ${SESSION.diag?.running ? 'disabled' : ''}>${SESSION.diag?.running ? 'Teste …' : 'Testen'}</button></div>
       ${
@@ -2025,14 +2178,17 @@ class FadeStudioCard extends HTMLElement {
       const poly = [...k, endKf].map((p) => `${x(p.t).toFixed(1)},${y(p.b).toFixed(1)}`).join(' ');
       let grid = '';
       for (let t = major; t < L; t += major) grid += `<line x1="${x(t)}" x2="${x(t)}" y1="0" y2="${H}" class="g"/>`;
-      const sz = 14;
+      const xs = tr.kfs.map((kf) => x(kf.t)).sort((a, b) => a - b);
+      const dense = xs.some((v, i) => i && v - xs[i - 1] < 20);
+      const sz = dense ? 7 : 14;
       const handles = ghost
         ? ''
         : tr.kfs
             .map((kf, ki) => {
               const sel = this._sel && this._sel.ti === ti && this._sel.ki === ki && (this._sel.m || undefined) === m;
               const z = sel ? 18 : sz;
-              return `<rect class="hit" data-ki="${ki}" x="${x(kf.t) - 16}" y="${y(kf.b) - 16}" width="32" height="32"/>
+              const hw = dense ? 8 : 16;
+              return `<rect class="hit" data-ki="${ki}" x="${x(kf.t) - hw}" y="${y(kf.b) - 16}" width="${2 * hw}" height="32"/>
                 <rect class="kf ${sel ? 'sel' : ''}" data-ki="${ki}" x="${x(kf.t) - z / 2}" y="${y(kf.b) - z / 2}" width="${z}" height="${z}"/>`;
             })
             .join('');
@@ -2102,7 +2258,11 @@ class FadeStudioCard extends HTMLElement {
     const pb = r.querySelector('#play');
     if (pb) {
       pb.classList.toggle('on', run);
-      pb.innerHTML = this._ic(run ? 'pause' : 'play');
+      const icon = run ? 'pause' : 'play';
+      if (pb.dataset.icon !== icon) {
+        pb.dataset.icon = icon;
+        pb.innerHTML = this._ic(icon);
+      }
       pb.title = run ? 'Pause – Lampen bleiben, wie sie sind' : this._paused() != null ? 'Weiter an der gemerkten Stelle' : 'Starten';
     }
     const st = r.querySelector('#status');
@@ -2124,7 +2284,10 @@ class FadeStudioCard extends HTMLElement {
     if (ln) {
       const cur = r.querySelector('#play')?.dataset.cur;
       const sh = cur === this._scriptEid() ? this._show : SESSION.lib[cur];
-      if (sh) ln.innerHTML = this._lampsNowHtml(sh);
+      if (sh) {
+        const html = this._lampsNowHtml(sh);
+        if (ln._html !== html) ln.innerHTML = ln._html = html;
+      }
     }
     // Laufanzeige in der Bibliothek aktuell halten
     if ([...r.querySelectorAll('.item[data-show]')].some((el) => !!el.querySelector('.run') !== h_on(this._hass, el.dataset.show))) this._render();
@@ -2292,6 +2455,11 @@ class FadeStudioCard extends HTMLElement {
       const cur = e.currentTarget.dataset.cur;
       if (cur && cur !== this._scriptEid()) this._playShow(cur);
       else this._play();
+    });
+    on('#sleep', 'click', async () => {
+      const cur = r.querySelector('#play')?.dataset.cur;
+      if (cur && cur !== this._scriptEid()) await this._loadShow(cur);
+      this._sleep();
     });
     on('#stop', 'click', async () => {
       const cur = r.querySelector('#play')?.dataset.cur;
@@ -2468,6 +2636,9 @@ class FadeStudioCard extends HTMLElement {
       upd('#stAwayAction', (t) => t.value, 'away_action');
       upd('#stOff', (t) => t.checked, 'stop_external_off');
       upd('#stOffAction', (t) => t.value, 'off_action');
+      upd('#stSleepMin', (t) => clamp(Number(t.value) || 20, 1, 240), 'sleep_min');
+      upd('#stSleepFade', (t) => clamp(Number(t.value) || 0, 0, 600), 'sleep_fade');
+      upd('#stSleepScope', (t) => t.value, 'sleep_scope');
       all('[data-tab]', (el) => ((SESSION.settingsTab = el.dataset.tab), this._render()));
       r.querySelectorAll('[data-pk]').forEach((el) =>
         el.addEventListener('change', () => {
@@ -2534,6 +2705,9 @@ class FadeStudioCard extends HTMLElement {
         if (s.id || s.tracks.length) this._newShow();
         const ns = this._show;
         ns.length = res.length;
+        // Hellster Punkt = 100: so zeigt die Zeitleiste, was die Lampen bei „Helligkeit gesamt" 100 % tun
+        const gn = showGain({ tracks: res.tracks });
+        res.tracks.forEach((t) => t.kfs.forEach((k) => (k.b = r1(Math.min(100, k.b * gn)))));
         ns.tracks = res.tracks;
         ns.name = T.name;
         ns.loop = true;
@@ -2749,7 +2923,7 @@ const STYLE = `
   .m-remote .now .nm { font-size: 22px; line-height: 28px; font-weight: 500; letter-spacing: -.01em; margin-top: 4px; }
   .m-remote .now .t { font-size: 44px; line-height: 52px; letter-spacing: -.03em; margin-top: 12px; }
   .m-remote .now .tot { font-size: 16px; }
-  .rkeys { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 16px 20px; }
+  .rkeys { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 16px 20px; }
   .rkeys .key { width: 100%; height: 64px; border-radius: 14px; --mdc-icon-size: 28px; }
   .rmaster { padding: 14px 20px 12px; }
   .rmaster .top { display: flex; justify-content: space-between; align-items: baseline; }
@@ -2908,6 +3082,10 @@ const STYLE = `
   .ib.tgl.on, .ib.on { color: var(--acc); }
   .tb-dim { display: grid; grid-template-columns: 20px 1fr 40px; align-items: center; gap: 8px; color: var(--ink-2); --mdc-icon-size: 18px; }
   .tb-dim .val { font-size: 12px; color: var(--ink); }
+  .meta { flex-wrap: nowrap; overflow: hidden; }
+  .opt > .v { display: flex; align-items: center; gap: 8px; white-space: nowrap; flex-shrink: 0; }
+  .ib.sm.split { color: var(--ink-2); opacity: .55; }
+  .ib.sm.split.on { color: var(--acc); opacity: 1; }
   .studio.nolib { grid-template-columns: 1fr; }
   .lib .hd { gap: 4px; padding-left: 8px; }
   .lib .hd .title { flex: 1; }
