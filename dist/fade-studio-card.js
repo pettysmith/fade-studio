@@ -140,7 +140,13 @@ const PROFILE_FIELDS = {
 const PROFILE_RULES = [
   // IKEA: Ton und Helligkeit gleichzeitig überblenden führt zu Springen/Blinken.
   { match: (d) => /ikea/i.test(d?.manufacturer || ''), set: { split: true, instant: true }, why: 'IKEA-Leuchten überblenden Ton und Helligkeit nicht zuverlässig gleichzeitig.' },
+  // IKEA-Modellkennung (Hersteller, nicht Name): „WS" = Ambient (nur Weißtöne), „WW" = nur Warmweiß.
+  // Über die Hue Bridge melden solche Lampen teils Farbe, können sie aber nicht zeigen.
+  { match: (d) => /ikea/i.test(d?.manufacturer || '') && /\bWS\b/.test(`${d?.model_id || ''} ${d?.model || ''}`), set: { colors: false }, why: 'IKEA „WS" ist eine Ambient-Leuchte: nur Weißtöne, keine Farben.' },
+  { match: (d) => /ikea/i.test(d?.manufacturer || '') && /\bWW\b/.test(`${d?.model_id || ''} ${d?.model || ''}`), set: { colors: false, whites: false }, why: 'IKEA „WW" kann nur Warmweiß dimmen.' },
 ];
+/** Leuchtenart wie bei Hue: Farbe, Ambient (Weißtöne), Weiß (nur dimmbar). */
+const lampKind = (l) => (l.color ? 'Farbe' : l.ct ? 'Ambient' : 'Weiß');
 function profileKey(dev) {
   return `${dev?.manufacturer || 'Unbekannt'}|${dev?.model_id || dev?.model || 'Unbekannt'}`;
 }
@@ -792,7 +798,7 @@ function genCandle(hass, eids, p, ctx) {
   });
 }
 
-/** Dusk / Aurora: Farblampen ziehen langsam versetzt durch eine Palette, Weiß-Lampen bleiben gedämpft. */
+/** Dusk / Aurora: Farblampen ziehen langsam versetzt durch eine Palette, Ambient- und Weiß-Lampen bleiben gedämpft. */
 function genPalette(hass, eids, p, ctx, colors, whiteK) {
   const step = Math.min(p.change, MAX_LEN / colors.length);
   const L = r1(colors.length * step);
@@ -883,16 +889,16 @@ const TEMPLATES = {
   },
   dusk: {
     name: 'Dusk',
-    desc: 'Abendrot: Die Farblampen ziehen langsam und versetzt durch Bernstein, Koralle, Rosé und Violett. Alle Weiß-Lampen bleiben gedämpft in sehr warmem Licht.',
+    desc: 'Abendrot: Die Farblampen ziehen langsam und versetzt durch Bernstein, Koralle, Rosé und Violett. Alle Ambient- und Weiß-Lampen bleiben gedämpft in sehr warmem Licht.',
     defaults: { change: 5, hi: 100, lo: 30, white: 20 },
-    params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Weiß-Lampen', '%', 0, 100)],
+    params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Ambient- und Weiß-Lampen', '%', 0, 100)],
     build: (hass, eids, p, ctx) => genPalette(hass, eids, p, ctx, DUSK, 2200),
   },
   aurora: {
     name: 'Aurora',
-    desc: 'Polarlicht: Die Farblampen gleiten versetzt durch Türkis, Grün, Blau und Violett. Weiß-Lampen leuchten schwach in kühlem Weiß – ein kühler Kontrast zu Dusk.',
+    desc: 'Polarlicht: Die Farblampen gleiten versetzt durch Türkis, Grün, Blau und Violett. Ambient- und Weiß-Lampen leuchten schwach in kühlem Weiß – ein kühler Kontrast zu Dusk.',
     defaults: { change: 5, hi: 100, lo: 30, white: 15 },
-    params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Weiß-Lampen', '%', 0, 100)],
+    params: [num('change', 'Farbwechsel alle', 's', 3, 15), num('hi', 'Farbe hell', '%', 1, 100), num('lo', 'Farbe gedämpft', '%', 1, 100), num('white', 'Ambient- und Weiß-Lampen', '%', 0, 100)],
     build: (hass, eids, p, ctx) => genPalette(hass, eids, p, ctx, AURORA, 4000),
   },
   accent: {
@@ -943,6 +949,7 @@ const LANE_H = 72;
 const SESSION = { show: null, sel: null, dirty: false, msg: '', gen: null, settings: null, settingsOpen: false, paused: {}, playBase: {}, lib: {}, libLoading: false, view: 'remote' };
 try {
   SESSION.paused = JSON.parse(localStorage.getItem('fade-studio-paused') || '{}') || {};
+  SESSION.libHidden = localStorage.getItem('fade-studio-lib-hidden') === '1';
 } catch (e) {
   SESSION.paused = {};
 }
@@ -1600,7 +1607,7 @@ class FadeStudioCard extends HTMLElement {
   _libHtml() {
     const ids = this._showIds();
     return `<aside class="lib">
-      <div class="hd"><span class="title">Fade Studio</span><button class="ib" id="settings" title="Einstellungen">${this._ic('tune-variant')}</button></div>
+      <div class="hd"><button class="ib" id="libBtn" title="Abläufe einklappen">${this._ic('dock-left')}</button><span class="title">Fade Studio</span><button class="ib" id="settings" title="Einstellungen">${this._ic('tune-variant')}</button></div>
       <div class="items">
         ${ids
           .map((eid) => {
@@ -1628,19 +1635,21 @@ class FadeStudioCard extends HTMLElement {
     const lights = this._lights();
     const nPlay = playTracks(h, s).length;
     const back = !this._wide() ? `<div class="hd"><button class="ib" id="toRemote" title="Zur Fernbedienung">${this._ic('arrow-left')}</button><span class="title">${esc(s.name)}</span><button class="ib" id="settings" title="Einstellungen">${this._ic('tune-variant')}</button></div>` : '';
-    return `<div class="studio">
-      ${this._wide() ? this._libHtml() : ''}
+    const lib = this._wide() && !SESSION.libHidden;
+    return `<div class="studio ${lib ? '' : 'nolib'}">
+      ${lib ? this._libHtml() : ''}
       <section class="main">
         ${back}
         <div class="toolbar">
           <div class="tb-l">
+            ${this._wide() && SESSION.libHidden ? `<button class="ib" id="libBtn" title="Abläufe zeigen">${this._ic('dock-left')}</button>` : ''}
             <button class="key" id="play" ${s.id ? '' : 'disabled'}></button>
             <button class="key" id="stop" ${s.id ? '' : 'disabled'} title="Sanft stoppen – mit dem eingestellten Ende">${this._ic('stop')}</button>
             <span class="time mono"><span id="clk">0.0</span><span class="tot"> / ${r1(s.length)} s</span></span>
           </div>
           <div class="tb-name">
             <input class="name-in" id="name" value="${esc(s.name)}" title="Name des Ablaufs">
-            <span class="status" id="status"></span>
+            <span class="status"><span id="status"></span><span class="msg" id="msg">${esc(this._msg)}</span></span>
           </div>
           <select class="fld sm mono" id="lenSel" title="Länge des Ablaufs">${[...new Set([10, 15, 20, 30, 45, 60, r1(s.length)])]
             .sort((x, y) => x - y)
@@ -1651,6 +1660,10 @@ class FadeStudioCard extends HTMLElement {
           <div class="tb-dim" title="Helligkeit gesamt: regelt alle Lampen dieses Ablaufs gemeinsam und im Verhältnis, auch während er läuft. 100 % = der hellste Punkt leuchtet voll.">
             ${this._ic('brightness-6')}
             ${dimmer ? `<input type="range" class="rng" id="dimmer" min="0" max="100" step="1" value="${dimmer.state}"><span class="mono val" id="dimv">${Math.round(dimmer.state)} %</span>` : '<span class="hint">nach dem Speichern</span>'}
+          </div>
+          <div class="tb-save">
+            <button class="ib" id="discard" ${this._dirty ? '' : 'disabled'} title="Ungespeicherte Änderungen verwerfen">${this._ic('undo')}</button>
+            <button class="btn pri" id="save" title="Ablauf in Home Assistant speichern – erst dann spielt er so">${this._dirty ? 'Speichern •' : 'Speichern'}</button>
           </div>
           ${
             SESSION.optsOpen
@@ -1673,6 +1686,7 @@ class FadeStudioCard extends HTMLElement {
                       : ''
                   }
                   <label><span>Übergang am Ende</span><span class="v"><input class="fld sm mono num" id="endFade" type="number" min="0" step="1" value="${s.end.fade}" ${s.end.mode === 'hold' ? 'disabled' : ''}><span class="u">s</span></span></label>
+                  ${s.id ? `<button class="gb muted" id="delete" title="Diesen Ablauf mit Skript und Regler löschen">${this._ic('delete-outline')}Ablauf löschen</button>` : ''}
                 </div>`
               : ''
           }
@@ -1699,13 +1713,6 @@ class FadeStudioCard extends HTMLElement {
 
         ${this._inspHtml()}
 
-        <div class="foot">
-          ${s.id ? `<button class="gb muted" id="delete" title="Diesen Ablauf mit Skript und Regler löschen">Ablauf löschen</button>` : ''}
-          <span class="lbl" id="msg">${esc(this._msg)}</span>
-          <span class="grow"></span>
-          <button class="btn sec" id="discard" ${this._dirty ? '' : 'disabled'} title="Ungespeicherte Änderungen zurücknehmen">Verwerfen</button>
-          <button class="btn pri" id="save" title="Ablauf in Home Assistant speichern – erst dann spielt er so">${this._dirty ? 'Speichern •' : 'Speichern'}</button>
-        </div>
       </section>
     </div>`;
   }
@@ -1950,7 +1957,7 @@ class FadeStudioCard extends HTMLElement {
             )
             .join('')}
           <div class="plamps">${p.lamps
-            .map((l) => `<span>${esc(l.name)}<small class="mono"> ${l.canColor ? 'Farbe' : l.canCt ? 'Weißton' : 'Helligkeit'}${l.available ? '' : ' · nicht erreichbar'}</small></span>`)
+            .map((l) => `<span>${esc(l.name)}<small class="mono"> ${lampKind(l)}${l.available ? '' : ' · nicht erreichbar'}</small></span>`)
             .join('')}</div>
         </div>`;
       })
@@ -2425,6 +2432,11 @@ class FadeStudioCard extends HTMLElement {
 
     // Fuß
     on('#save', 'click', () => this._save());
+    on('#libBtn', 'click', () => {
+      SESSION.libHidden = !SESSION.libHidden;
+      try { localStorage.setItem('fade-studio-lib-hidden', SESSION.libHidden ? '1' : '0'); } catch (_) {}
+      this._render();
+    });
     on('#delete', 'click', () => this._deleteShow());
     on('#discard', 'click', () => {
       if (!confirm('Ungespeicherte Änderungen zurücknehmen?')) return;
@@ -2878,7 +2890,7 @@ const STYLE = `
   ha-card.fs { --band: 56px; --foot: 56px; }
   .hd { height: 56px; }
   .title { font-size: 14px; }
-  .toolbar { position: relative; height: 56px; box-sizing: border-box; display: grid; grid-template-columns: var(--col) minmax(120px, 1fr) auto auto auto minmax(160px, 220px); align-items: center; column-gap: 8px; padding-right: 16px; border-bottom: 1px solid var(--line); }
+  .toolbar { position: relative; height: 56px; box-sizing: border-box; display: grid; grid-template-columns: var(--col) minmax(96px, 1fr) auto auto auto minmax(110px, 200px) auto; align-items: center; column-gap: 8px; padding-right: 16px; border-bottom: 1px solid var(--line); }
   .narrow .toolbar { grid-template-columns: auto 1fr auto auto auto; padding-left: 12px; }
   .narrow .tb-dim { display: none; }
   .tb-l { display: flex; align-items: center; gap: 6px; padding-left: 16px; }
@@ -2896,6 +2908,15 @@ const STYLE = `
   .ib.tgl.on, .ib.on { color: var(--acc); }
   .tb-dim { display: grid; grid-template-columns: 20px 1fr 40px; align-items: center; gap: 8px; color: var(--ink-2); --mdc-icon-size: 18px; }
   .tb-dim .val { font-size: 12px; color: var(--ink); }
+  .studio.nolib { grid-template-columns: 1fr; }
+  .lib .hd { gap: 4px; padding-left: 8px; }
+  .lib .hd .title { flex: 1; }
+  .toolbar #lenSel { min-width: 76px; }
+  .tb-save { display: flex; align-items: center; gap: 4px; }
+  .tb-save .btn { height: 40px; }
+  .narrow .tb-save { display: none; }
+  .toolbar .status .msg:not(:empty)::before { content: ' · '; }
+  .opts .gb { margin-top: 4px; justify-content: flex-start; padding-left: 0; }
   .opts { position: absolute; right: 16px; top: 52px; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; display: flex; flex-direction: column; min-width: 260px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
   .opts label { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 40px; font-size: 13px; color: var(--ink-2); }
   .ruler .ln, .row.ruler { height: 32px; }
