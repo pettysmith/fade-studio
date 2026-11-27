@@ -5,7 +5,7 @@
  * Home-Assistant-Bausteine (Skript + Zahlen-Helfer), alle mit dem Label
  * "Fade Studio". Abgespielt wird ausschließlich von Home Assistant selbst.
  */
-const FS_VERSION = '0.9.2';
+const FS_VERSION = '0.9.3';
 const PREFIX = 'fade_studio_';
 const LABEL = 'Fade Studio';
 const SNAP_SUFFIX = '_before';
@@ -1189,7 +1189,30 @@ class FadeStudioCard extends HTMLElement {
     } catch (e) {
       cfg = await this._hass.callApi('GET', `config/script/config/${eid.replace('script.', '')}`);
     }
-    return cfg?.variables?.fade_studio?.show || null;
+    const fs = cfg?.variables?.fade_studio;
+    if (fs?.show) (SESSION.editor ||= {})[eid] = fs.editor;
+    return fs?.show || null;
+  }
+  /**
+   * Abläufe, die mit einer älteren Version gespeichert wurden, still neu übersetzen –
+   * damit neue Funktionen (z. B. Schlafen) ohne erneutes Speichern wirken. Laufende bleiben unberührt.
+   */
+  async _upgradeShows(ids) {
+    if (!this._hass.user?.is_admin || SESSION.upgrading) return;
+    const old = ids.filter((eid) => SESSION.lib[eid] && SESSION.editor?.[eid] !== FS_VERSION && !h_on(this._hass, eid));
+    if (!old.length) return;
+    SESSION.upgrading = true;
+    try {
+      if (!SESSION.settings) await this._loadSettings();
+      for (const eid of old) {
+        const id = eid.replace('script.', '');
+        const sh = { ...SESSION.lib[eid], id };
+        await this._hass.callApi('POST', `config/script/config/${id}`, buildScript(sh, this._settings, playTracks(this._hass, sh))).catch(() => {});
+        SESSION.editor[eid] = FS_VERSION;
+      }
+    } finally {
+      SESSION.upgrading = false;
+    }
   }
   /** Alle Abläufe parallel lesen. */
   async _allShows() {
@@ -1558,12 +1581,24 @@ class FadeStudioCard extends HTMLElement {
     const st = this._settings;
     return `Schlafen: läuft noch ${st.sleep_min} min, blendet dann in ${st.sleep_fade} s aus und schaltet ${st.sleep_scope === 'all' ? 'alle Lampen im Haus' : 'die Lampen dieses Ablaufs'} aus. Einstellbar unter ⚙.`;
   }
-  _sleep() {
+  async _sleep() {
     const e = this._scriptEid();
     if (!e) return this._setMsg('Bitte zuerst speichern.');
     const id = this._show.id;
     const min = Number(this._settings.sleep_min) || 20;
     const t = this._running() ? this._playTime() : this._paused();
+    // Mit älterer Version gespeichert? Dann kennt das Skript Schlafen noch nicht – erst neu übersetzen.
+    if (SESSION.editor?.[e] !== FS_VERSION) {
+      if (!this._hass.user?.is_admin) return this._setMsg('Dieser Ablauf muss einmal von einem Admin gespeichert werden, bevor Schlafen geht.');
+      const saved = SESSION.lib[e] || (await this._showOf(e));
+      if (saved) {
+        const sh = { ...saved, id };
+        await this._hass.callApi('POST', `config/script/config/${id}`, buildScript(sh, this._settings, playTracks(this._hass, sh)));
+        (SESSION.editor ||= {})[e] = FS_VERSION;
+        await new Promise((r) => setTimeout(r, 800));
+      }
+    }
+
     delete SESSION.paused[id];
     savePaused();
     SESSION.sleep = { ...(SESSION.sleep || {}), [id]: Date.now() + min * 60000 };
@@ -1670,6 +1705,7 @@ class FadeStudioCard extends HTMLElement {
     ids.forEach((eid, i) => (SESSION.lib[eid] = res[i])); // null = nicht erneut versuchen
     SESSION.libLoading = false;
     this._render();
+    this._upgradeShows(ids);
   }
 
   async _playShow(eid) {
